@@ -804,7 +804,29 @@ class cState:
 				#2016.06.06 JU: new feature: 162 = put hand controller into "Photo" mode (or use 163 for "All Speeds" Mode)
 				#NOTE: this uses a "Native" Gemini command; all the other calls to CommandBlind use the "Meade" command subset protocol.
                 print "... set hand controller to Photo mode"
-                self.MOUNT.CommandBlind(">162:",False)
+                self.MOUNT.CommandBlind(">163:",False)  #All speeds
+                #2019.08.04 JU: make sure mount does not precess coords (I've seen precession turn itself on, which messes up goto's !!!)
+                self.MOUNT.CommandBlind(":p0#",False)    #no precession, no refraction (note: commands to turn on refraction don't seem to work)
+                self.MOUNT.CommandBlind(">181:",False)  #Alarm off
+
+                self.MOUNT.CommandBlind(">131:",False)  #Tracking rate = SIDEREAL  (hope it is OK to do this)
+                
+                #Other commands that may be useful:
+                #   :hP#    move to Home position
+                #   result = MOUNT.CommandString(":Gv#",False)  #get velocity; return N for no tracking
+                #   result = MOUNT.CommandString(":h?",False)  #Get home status: 2=move in progress to home, 1=move to home done; 0=no move home cmd received
+                #   :Me#    move eastward at selected rate (use after next cmd?)
+                #   :RC# or :RM#   subsequent commands will move at Center speed
+                #   :RG#    subsequent commands will move at Guiding speed
+                #   :RS#    subsequent commands will move at Slew speed
+                #   :hN#    Sleep telescope; stop tracking, blank displays
+                #   :hW#    Wake up telescope; restart tracking
+                #   result = MOUNT.CommandString("<99:",False)  #99 = Status Inquiry; return value gives several status flags
+                #   result = MOUNT.CommandString("<130:",False)  #130 = Get current tracking rate; 135=terrestial mode (ie. none), 131=sidereal
+                #   result = MOUNT.CommandString("<201:",False)  #polar axis misalignment in azimuth; seconds of arc
+                #   result = MOUNT.CommandString("<202:",False)  #polar axis misalignment in elevation; seconds of arc
+                
+                
             except:
                 print "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 print "--> Cannot connect to Gemini/POTH"
@@ -4355,7 +4377,9 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
                     Log2(0,"RETRYING (%s) after success" % (strCamera(camera)))
                     retry = True
                 else:
-                    Log2(3,"(Diff exceeds threshold, but no retries left)")
+                    Log2(0,"**********************************************************")
+                    Log2(0,"Position difference exceeds threshold, but no retries left")
+                    Log2(0,"**********************************************************")
             else:
                 #this is good enough (don't need to do correction goto??)
                 if vState.ppState[camera].precision == 0:
@@ -6947,6 +6971,7 @@ def Process( Line, vState ):
 
     #version 1 commands still supported
     action_list = [      #commands that result in actions
+        # *** ENTRIES HERE MUST BE ALL CAPITAL LETTERS ***
         # CmdName        Function for Cmd     RerunIfCloudy (eg skip 'stationary' steps)
         ("AUTOFOCUS",    execAutoFocus,             1),
         ("CATFOCUSNEAR", execCatFocusNear,          1),
@@ -6955,9 +6980,9 @@ def Process( Line, vState ):
         ("FOCUS",        execFocus,                 1),
         ("PARK",         execPark,                  0),
         ("DARKS",        execDarks,                 0),
-        ("CropDARKS",    execCropDarks,             0),
+        ("CROPDARKS",    execCropDarks,             0),
         ("BIAS",         execBias,                  0),
-        ("CropBIAS",     execCropBias,              0),
+        ("CROPBIAS",     execCropBias,              0),
         ("FLATS",        execFlats,                 0),
         ("WAITUNTIL",    execWaitUntil,             0),
         ("CATGOTO",      execCatGoto,               0),      #Not implemented yet
@@ -7190,7 +7215,7 @@ def Process( Line, vState ):
                 errorCount = 0
                 return
 
-        Error( "Unable to parse command: " + Line)      #we fell out of the above loop so did not find a match
+        Error( "Unable to parse command (this string does not appear in action_list): " + Line)      #we fell out of the above loop so did not find a match
         raise ValidationError
 
     return

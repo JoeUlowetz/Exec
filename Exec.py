@@ -4,6 +4,9 @@
 #   PrecessLocalToJ2000(dJNowRA, dJNowDec)
 #   PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec)
 
+#   :GH#    Get hour angle the telescope is pointing to
+#   :Gm#    Get telescope mount's side of meridian; E# or W#
+
 #Setting for config file:   THIS ONLY APPLIES TO WIDE FIELD, ALL NARROW FIELDS STILL USE PP
 #	Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
 # line 4412:  CustomAstrometryNetSolve(...)
@@ -243,9 +246,44 @@ import imaging_db   #my code that implements DB functions:  imaging_db.py
 
 import MultiPPSolve #added 2019.01.01 JU
 
+import inspect      #added 2019.06.11 JU to add new feature: dumpCallStack()
+
 #Exec4n.py 2015.12.13    DISABLED 2018.09.02
 #import socket
 #from inspect import currentframe, getframeinfo
+
+def dumpCallStack1():    #returns string w/ list of functions called to reach this point
+    i = 1
+    msg = "Stack: "
+    while 1:
+        try:
+            src = inspect.stack()[i][3]
+            if src == "<module>":
+                msg = msg[:-4]
+                break
+            msg += src + " <- "
+            i += 1
+        except:
+            msg = "[PROBLEM]"
+            break
+    return msg
+
+def dumpCallStack2():    #returns string w/ list of functions and src code line location called to reach this point
+    previous_frame = inspect.currentframe().f_back
+    msg = "Stack: "
+    while 1:
+        try:
+            (filename, line_number, function_name, lines, index) = inspect.getframeinfo(previous_frame)
+            if function_name == "<module>":
+                msg = msg[:-4]
+                break
+            msg += function_name + " [ln:%d] <- " % line_number
+            previous_frame = previous_frame.f_back
+        except:
+            msg = "PROBLEM"
+            break
+    return msg
+
 def SendToServer( frameinfo, msg):
     return	#temp disabled 2016.02.01
  #   try:
@@ -443,7 +481,7 @@ class ArgumentError(Exception):
 
 class cState:
     def Reset(self):
-        self.MeridianSafety = 0.15     #interrupt current exposure if this far past meridian
+        self.MeridianSafety = 0.05     #interrupt current exposure if this far past meridian    2019.05.26 JU: changed from 0.15 to 0.05 (3 minutes past meridian)
         self.MeridianPast = 0.1       #do not start new exposure if this far past meridian
         #2018.04.08 JU: changed above; was 0.3, 0.2 but even at 0.2 the mount was stopping first because of meridian limit, so need smaller values
         self.guide         = 0        #0=no, 1=yes for guiding during exposures
@@ -1117,7 +1155,7 @@ def StatusLog(value):
     fs = open( statusLogName, "a" )
     fs.write(value + "\n")
     fs.close()
-    Log2(4,value)   #put the status lines in the overall log file also
+    Log2(5,value)   #put the status lines in the overall log file also
 
 #--------------------------------
 def StatusWindowSimple(value):   #common code
@@ -1217,6 +1255,7 @@ def Log2(level,value):
     #level = what level of detail to output to the screen and regular log file.
     #Note that ALL messages go to the detailed log file
     # each level has 2 additional spaces before log text (for indenting)
+    #2019.06.11 JU: if level == 4 then include stack dump info
 
     #build the filename
     iDateTime = time.gmtime()    #Change: include date as part of logfile name
@@ -1232,11 +1271,30 @@ def Log2(level,value):
         value = value[:-1]
     value = prefix + value
 
+    #2019.06.11 JU: add logic to dump the call stack as part of the detailed log file
+    previous_frame = inspect.currentframe().f_back
+    if level  == 4:
+        stackMsg = "Stack: "
+        while 1:
+            try:
+                (filename, line_number, function_name, lines, index) = inspect.getframeinfo(previous_frame)
+                if function_name == "<module>":
+                    stackMsg = stackMsg[:-4]
+                    break
+                stackMsg += function_name + " [ln:%d] <- " % line_number
+                previous_frame = previous_frame.f_back
+            except:
+                stackMsg = "[PROBLEM WITH STACK DUMP]"
+                break
+        #make log item at least 60 char wide for this special case to make stack more readable
+        value = value.ljust(60)
+    else:
+        stackMsg = ""
+
     #write all entries to detailed log file:
     try:
        f = open( logAllFile[:-4] + sDateStr, "a" )
-       f.write(value)
-       f.write("\n")
+       f.write(value + " | " + stackMsg + "\n")
        f.close()
     except:
        #print "UNABLE TO WRITE TO LOG FILE:",logAllFile[:-4] + sDateStr, value
@@ -1344,7 +1402,7 @@ def LogStatusHeaderBrief():
    StatusLog("                 Mount-JNow             Pier RevX Cam                  Aggr                  -Focuser-  -Guide_Image------------ ----Detect_guider_problems----")
    StatusLog("           ---RA----- ---Dec--- Alt- -Az-- P R   Temp Pwr  Xerr  Yerr  X  Y  FWHM Sidereal   Posn Temp    min   max   avg    std [excessive error ck]   [Stale ck]")
 
-def LogStatusHeader():
+def LogStatusHeader():      ###THIS IS NOT USED
    gmt = time.gmtime(time.time())
    gfmt = '%a, %d %b %Y %H:%M:%S GMT'
    gstr = time.strftime(gfmt, gmt)
@@ -1362,82 +1420,82 @@ def LogStatusHeader():
 #--------------------------------
 def LogConditions(vState):
     #log camera temperature and other info (call after each action command (overkill, but can review later for trends))
-    Log2(6,"Current conditions - no longer logged:")
+    #Log2(6,"Current conditions - no longer logged:")
     return
 
 #2014.09.23 JU: removed this logging; it adds about 4 seconds after each image, and if doing short time series this adds up.
-    Log2(4,"Current conditions:")
+    Log2(5,"Current conditions:")
 
-    Log2(4,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-    Log2(4,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
-    #Log2(4,"... Side of Pier: " + str(vState.MOUNT.SideOfPier))
-    Log2(4,"... Side of Pier: " + str(SideOfSky(vState)))
+    Log2(5,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(5,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    #Log2(5,"... Side of Pier: " + str(vState.MOUNT.SideOfPier))
+    Log2(5,"... Side of Pier: " + str(SideOfSky(vState)))
 
-    Log2(4,"... Altitude: " + str(round(vState.MOUNT.Altitude,2)))
-    Log2(4,"... Azimuth:  " + str(round(vState.MOUNT.Azimuth,2)))
+    Log2(5,"... Altitude: " + str(round(vState.MOUNT.Altitude,2)))
+    Log2(5,"... Azimuth:  " + str(round(vState.MOUNT.Azimuth,2)))
     try:
         if vState.CAMERA.CoolerOn:
-            Log2(4,"... Cooler is running")
+            Log2(5,"... Cooler is running")
         else:
-            Log2(4,"... Cooler is OFF")
+            Log2(5,"... Cooler is OFF")
     except:
         pass
 
     try:
-        Log2(4,"... Camera name:  " + str(vState.CAMERA.CameraName))
+        Log2(5,"... Camera name:  " + str(vState.CAMERA.CameraName))
     except:
         pass
 
     try:
-        Log2(4,"... Camera temp:  " + str(round(vState.CAMERA.Temperature,2)))
+        Log2(5,"... Camera temp:  " + str(round(vState.CAMERA.Temperature,2)))
     except:
         pass
 
     try:
-        Log2(4,"... Set point:    " + str(vState.CAMERA.TemperatureSetPoint))
+        Log2(5,"... Set point:    " + str(vState.CAMERA.TemperatureSetPoint))
     except:
         pass
 
     try:
-        Log2(4,"... Cooler power: " + str(vState.CAMERA.CoolerPower))
+        Log2(5,"... Cooler power: " + str(vState.CAMERA.CoolerPower))
     except:
         pass
 
     try:
-        Log2(4,"... Last image FWHM:  " + str(round(vState.CAMERA.FWHM,2)))
+        Log2(5,"... Last image FWHM:  " + str(round(vState.CAMERA.FWHM,2)))
     except:
         pass
 
     try:
-        Log2(4,"... Last image half flux diameter:  " + str(round(vState.CAMERA.HalfFluxDiameter,2)))
+        Log2(5,"... Last image half flux diameter:  " + str(round(vState.CAMERA.HalfFluxDiameter,2)))
     except:
         pass
 
     try:
-        Log2(4,"... Last image cropping settings: x=%d, y=%d, width=%d, height=%d  "
+        Log2(5,"... Last image cropping settings: x=%d, y=%d, width=%d, height=%d  "
             % (vState.CAMERA.StartX,vState.CAMERA.StartY,vState.CAMERA.NumX,vState.Camera.NumY))
     except:
         pass
 
     try:
-        Log2(4,"... Last image max pixel level: " + str(vState.CAMERA.MaxPixel) + ", location: " +
+        Log2(5,"... Last image max pixel level: " + str(vState.CAMERA.MaxPixel) + ", location: " +
                 str(vState.CAMERA.MaxPixelX) + ", " + str(vState.CAMERA.MaxPixelY))
     except:
         pass
 
     try:
-        Log2(4,"... Robofocus position: " + str(vState.FOCUSER.Position))
+        Log2(5,"... Robofocus position: " + str(vState.FOCUSER.Position))
     except:
         pass
 
     try:
-        Log2(4,"... Robofocus temperature code: " + str(vState.FOCUSER.Temperature))
+        Log2(5,"... Robofocus temperature code: " + str(vState.FOCUSER.Temperature))
     except:
         pass
 
     try:
         doc = vState.CAMERA.Document
-        Log2(4,"... Size of last exposure (pixels): %d x %d "  % (doc.XSize,doc.YSize))
+        Log2(5,"... Size of last exposure (pixels): %d x %d "  % (doc.XSize,doc.YSize))
     except:
         pass
 
@@ -1490,10 +1548,10 @@ def CheckOscillation(obj,vState):
    if bAlternate and bLarge:
        #oscillation problem detected in last 10 guider measurements
        Log2(0,"Oscillation problem detected in last 10 guider measurements")
-       Log2(4,"Dump of list of guide errors:")
+       Log2(5,"Dump of list of guide errors:")
        for item in obj:
          Log2(5,"%5.2f" % item)
-       Log2(4,"End of dump")
+       Log2(5,"End of dump")
        return (True,"Oscil")
 
    # Both not true, return string to show which is true, if either
@@ -1574,23 +1632,23 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
        try:
             nowPos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination)
             #2018.08.31 JU: commented out these lines; they make logall file unreadable
-            #Log2(4,"nowPos.dump:")
-            #Log2(4,nowPos.dump())
-            #Log2(4,"vState.gotoPosition.dump:")
-            #Log2(4,vState.gotoPosition.dump())
+            #Log2(5,"nowPos.dump:")
+            #Log2(5,nowPos.dump())
+            #Log2(5,"vState.gotoPosition.dump:")
+            #Log2(5,vState.gotoPosition.dump())
 
 
             diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
             diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
             DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
             delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
-            
+
             #I found a formula to do this:
             #Given coord pair (ra1,dec1) and pair (ra2,dec2), then the angular distance between the coord are:
             #   cos(result) = (sin(dec1) * sin(dec2)) + cos(dec1) * cos(dec2) * sin(ra1 - ra2)
             #Where all coords are given in RADIANS (RA is not Hours, it is angle)
             #I found this: physics.stackexchange.com/questions/224950/how-can-i-convert-right-ascension-and-declination-to-distances
-#TODO: do additional delta calc using new formula and see if result much different? 
+#TODO: do additional delta calc using new formula and see if result much different?
             # math.cos( math.radians(degrees) )
             ra1 = math.radians( vState.gotoPosition.dRA_JNow() * 15 )   #Desired
             dec1 = math.radians( vState.gotoPosition.dDec_JNow() )
@@ -1611,7 +1669,7 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
             # scope position based on model, so it can detect if moved far from target coord
             # even if not guiding!!!
             #2019.04.23 JU: disable this logging completely; there is a slow drift probably due to guiding pushing
-            #   scope away from location due to polar alignment. 
+            #   scope away from location due to polar alignment.
             if 0:
                 if delta > vState.driftThreshold:
                     #PROBLEM
@@ -1639,7 +1697,7 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
                     #return True
                 else:
                     Log2(0,"delta = %5.2f arcmin (%5.2f)" % (delta,result_deg))      #Temporary logging
-            
+
 
        except:
            Log2(1,"Exception trying to read mount current position for threshold")
@@ -1917,7 +1975,7 @@ def LogStatusShort(vState):
       sideofpier,                                #number
       UTIL.HoursToHMS(fSidereal,":",":","",1)                 #string
       )
-   Log2(4,"LogStatusShort: " + value)
+   Log2(5,"LogStatusShort: " + value)
 
 #------------------------------------------------------------------------------
 def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAvgY,savgS,slenAvgS, msgX, msgY ):
@@ -2423,7 +2481,7 @@ def DiffXY(x1,x0,y1,y0):
 def ReportImageFWHM(vState,filename=""):
   return  #disable for now
   try:
-    Log2(4,"Analysis of brightest 100 image stars written to detailed log")
+    Log2(5,"Analysis of brightest 100 image stars written to detailed log")
     pp = win32com.client.Dispatch("PinPoint.Plate") #used to find stars in image
 
     ImagArry = vState.CAMERA.ImageArray      #put imager array into var  (this is safearray of long, not variant)
@@ -2441,7 +2499,7 @@ def ReportImageFWHM(vState,filename=""):
 
     pp.FindImageStars()         #scan the imager image for stars
 
-    Log2(4,"Number of stars found in imager field image: %d" % len(pp.ImageStars))
+    Log2(5,"Number of stars found in imager field image: %d" % len(pp.ImageStars))
 
     stars = {}                  #put data into map so we can (reverse) sort by flux
     cntSaturated = 0
@@ -2451,7 +2509,7 @@ def ReportImageFWHM(vState,filename=""):
         else:
             cntSaturated += 1
 
-    Log2(4,"Number of saturated stars ignored: %d" % cntSaturated)
+    Log2(5,"Number of saturated stars ignored: %d" % cntSaturated)
 
     #loop over stars in reverse order of flux
     #Measure the brightest 10 stars (that aren't saturated), calc average of their FWHM values.
@@ -2464,7 +2522,7 @@ def ReportImageFWHM(vState,filename=""):
             break
         X = stars[key][0]
         Y = stars[key][1]
-        #Log2(4,"Star: %5.2f, %5.2f,  Flux: %5.2f" % (X,Y,key))
+        #Log2(5,"Star: %5.2f, %5.2f,  Flux: %5.2f" % (X,Y,key))
         try:
             info = vState.CAMERA.Document.CalcInformation(X,Y)
         except:
@@ -2483,13 +2541,13 @@ def ReportImageFWHM(vState,filename=""):
         avgSum += info[9]
         avgCnt += 1
 
-        Log2(4,"Flux=%7.0f X=%6.2f Y=%6.2f Max=%6.0f Avg=%6.0f Flat=%4.2f FWHM=%5.2f HFD=%5.2f Inten=%8.1f SNR=%6.2f" % (key,X,Y,info[1],info[4],info[8],info[9],info[10],info[11],info[12]))
+        Log2(5,"Flux=%7.0f X=%6.2f Y=%6.2f Max=%6.0f Avg=%6.0f Flat=%4.2f FWHM=%5.2f HFD=%5.2f Inten=%8.1f SNR=%6.2f" % (key,X,Y,info[1],info[4],info[8],info[9],info[10],info[11],info[12]))
 
     if avgCnt > 0:
         avg = avgSum / avgCnt
     else:
         avg = 0.
-    Log2(4,"Finished with FWHM logging, average FWHM = %5.2f" % avg)
+    Log2(5,"Finished with FWHM logging, average FWHM = %5.2f" % avg)
 
     line = "# Stars =%4d  # Saturated =%3d  avg FWHM = %5.2f    %s" % (len(pp.ImageStars), cntSaturated, avg, filename )
     LogPerm(line,PERM_FWHM_LOG)
@@ -2756,37 +2814,37 @@ def ReportGuiderState(vState,message):
     Log2(3,"ReportGuiderState: %s" % message)
     imaging_db.RecordGuider(vState,False,1021)
     try:    #protect just in case of problem; these actions are not critical
-        Log2(4,"Guider settings:  %s" % message)
-        Log2(4,"... X Aggr:     " + str(vState.CAMERA.GuiderAggressivenessX))
-        Log2(4,"... Y Aggr:     " + str(vState.CAMERA.GuiderAggressivenessY))
-        Log2(4,"... Angle:      " + str(round(vState.CAMERA.GuiderAngle,2)))
-        Log2(4,"... AutoSelect: " + str(vState.CAMERA.GuiderAutoSelectStar))
-        Log2(4,"... Binning:    " + str(vState.CAMERA.GuiderBinning))
+        Log2(5,"Guider settings:  %s" % message)
+        Log2(5,"... X Aggr:     " + str(vState.CAMERA.GuiderAggressivenessX))
+        Log2(5,"... Y Aggr:     " + str(vState.CAMERA.GuiderAggressivenessY))
+        Log2(5,"... Angle:      " + str(round(vState.CAMERA.GuiderAngle,2)))
+        Log2(5,"... AutoSelect: " + str(vState.CAMERA.GuiderAutoSelectStar))
+        Log2(5,"... Binning:    " + str(vState.CAMERA.GuiderBinning))
 
-        Log2(4,"... Cal State:  " + str(vState.CAMERA.GuiderCalState))
-        Log2(4,"... Declination:" + str(vState.CAMERA.GuiderDeclination))
-        Log2(4,"... Max move X: " + str(vState.CAMERA.GuiderMaxMoveX))
-        Log2(4,"... Max move Y: " + str(vState.CAMERA.GuiderMaxMoveY))
-        Log2(4,"... Min move X: " + str(vState.CAMERA.GuiderMinMoveX))
-        Log2(4,"... Min move Y: " + str(vState.CAMERA.GuiderMinMoveY))
-        Log2(4,"... Moving?:    " + str(vState.CAMERA.GuiderMoving))
-        Log2(4,"... Name:       " + str(vState.CAMERA.GuiderName))
+        Log2(5,"... Cal State:  " + str(vState.CAMERA.GuiderCalState))
+        Log2(5,"... Declination:" + str(vState.CAMERA.GuiderDeclination))
+        Log2(5,"... Max move X: " + str(vState.CAMERA.GuiderMaxMoveX))
+        Log2(5,"... Max move Y: " + str(vState.CAMERA.GuiderMaxMoveY))
+        Log2(5,"... Min move X: " + str(vState.CAMERA.GuiderMinMoveX))
+        Log2(5,"... Min move Y: " + str(vState.CAMERA.GuiderMinMoveY))
+        Log2(5,"... Moving?:    " + str(vState.CAMERA.GuiderMoving))
+        Log2(5,"... Name:       " + str(vState.CAMERA.GuiderName))
 
-        Log2(4,"... Reverse X:  " + str(vState.CAMERA.GuiderReverseX))
-        Log2(4,"... Reverse Y:  " + str(vState.CAMERA.GuiderReverseY))
-        Log2(4,"... Running:    " + str(vState.CAMERA.GuiderRunning))
+        Log2(5,"... Reverse X:  " + str(vState.CAMERA.GuiderReverseX))
+        Log2(5,"... Reverse Y:  " + str(vState.CAMERA.GuiderReverseY))
+        Log2(5,"... Running:    " + str(vState.CAMERA.GuiderRunning))
 
-        Log2(4,"... X error:    " + str(vState.CAMERA.GuiderXError))
-        Log2(4,"... Y error:    " + str(vState.CAMERA.GuiderYError))
+        Log2(5,"... X error:    " + str(vState.CAMERA.GuiderXError))
+        Log2(5,"... Y error:    " + str(vState.CAMERA.GuiderYError))
 
-        Log2(4,"... X speed:    " + str(vState.CAMERA.GuiderXSpeed))
-        Log2(4,"... Y speed:    " + str(vState.CAMERA.GuiderYSpeed))
+        Log2(5,"... X speed:    " + str(vState.CAMERA.GuiderXSpeed))
+        Log2(5,"... Y speed:    " + str(vState.CAMERA.GuiderYSpeed))
 
-        Log2(4,"... X Position: " + str(vState.CAMERA.GuiderXStarPosition))
-        Log2(4,"... Y Position: " + str(vState.CAMERA.GuiderYStarPosition))
+        Log2(5,"... X Position: " + str(vState.CAMERA.GuiderXStarPosition))
+        Log2(5,"... Y Position: " + str(vState.CAMERA.GuiderYStarPosition))
 
-        Log2(4,"... X Size:     " + str(vState.CAMERA.GuiderXSize))
-        Log2(4,"... Y Size:     " + str(vState.CAMERA.GuiderYSize))
+        Log2(5,"... X Size:     " + str(vState.CAMERA.GuiderXSize))
+        Log2(5,"... Y Size:     " + str(vState.CAMERA.GuiderYSize))
         #LogOnly("... Cal state: " + str(vState.CAMERA.GuiderCalState) + " (problem if not 2)")  #THIS DOESN'T SEEM TO WORK
     except:
         Error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
@@ -2833,7 +2891,7 @@ def StartGuiding(objectName, vState):
     ReportGuiderState(vState,"Entry to StartGuiding()")
 
     #Reset statistics on guiding
-    Log2(4,"Resetting GuideX,Y Sum variables")
+    Log2(5,"Resetting GuideX,Y Sum variables")
     global gGuidingXSum
     gGuidingXSum = 0
     global gGuidingYSum
@@ -2871,13 +2929,13 @@ def StartGuiding(objectName, vState):
     # Warning: cannot call SideOfPier for simulator
     if runMode == 1:
        #if vState.MOUNT.SideOfPier <> SIDE_GUIDER_TRAINED:        #1=looking east, 0=looking west/OTA east
-       Log2(4,"Guider was trained on side of sky: %d" % SIDE_GUIDER_TRAINED)
+       Log2(5,"Guider was trained on side of sky: %d" % SIDE_GUIDER_TRAINED)
        if SideOfSky(vState) <> SIDE_GUIDER_TRAINED:
           vState.CAMERA.GuiderReverseX = True
-          Log2(4,"Setting camera.GuiderReverseX TRUE")
+          Log2(5,"Setting camera.GuiderReverseX TRUE")
        else:
           vState.CAMERA.GuiderReverseX = False
-          Log2(4,"Setting camera.GuiderReverseX false (not reversed)")
+          Log2(5,"Setting camera.GuiderReverseX false (not reversed)")
 
     #
     # log info about the guider
@@ -3178,7 +3236,7 @@ def StopGuiding(vState):
     else:
         avgX = math.sqrt(gGuidingXSum / gGuidingCount)
         avgY = math.sqrt(gGuidingYSum / gGuidingCount)
-        Log2(4,"Guiding statistics (RMS): x = %5.2f  y = %5.2f  cnt = %d  Max-X = %5.2f  Max-Y = %5.2f" % (avgX,avgY,gGuidingCount,gGuidingXMax,gGuidingYMax))
+        Log2(5,"Guiding statistics (RMS): x = %5.2f  y = %5.2f  cnt = %d  Max-X = %5.2f  Max-Y = %5.2f" % (avgX,avgY,gGuidingCount,gGuidingXMax,gGuidingYMax))
 #Consider logging this guider info more frequently, not just when guiding is stopped;
 #maybe log every 100 guider measurements
         #LogBase("%4d %5.2f %5.2f   %5.2f %5.2f  %d  %9s  %9s" % (gGuidingCount,avgX,avgY,gGuidingXMax,gGuidingYMax,vState.MOUNT.SideOfPier,UTIL.HoursToHMS( vState.MOUNT.RightAscension),DegreesToDMS( vState.MOUNT.Declination )), GUIDING_LOG)
@@ -3942,7 +4000,7 @@ def ClearImager(dic,vState,bForce=False):
         ##StatusWindow("substep","Flushing complete",vState)
     else:
         #for now, do not do anything w/ current guide camera
-        Log2(4,"Skipping flush of GUIDER CCD (no shutter, and takes long to download)")
+        Log2(5,"Skipping flush of GUIDER CCD (no shutter, and takes long to download)")
         return
 
     Log2(4,"ClearImager step completed")
@@ -4038,7 +4096,7 @@ def TakeNarrowImage(exposure,vState):   #used by Pinpoint solve routine
         time.sleep(2)
         LogStatus(vState,7)
 
-    #Log2(4,"PP---END narrow field exposure")
+    #Log2(5,"PP---END narrow field exposure")
     doc = vState.CAMERA.Document     #point to image just taken
     return doc
 
@@ -4051,7 +4109,7 @@ def TakeWideExposure(exposure,vState):  #used by Pinpoint solve routine
     while vState.CAMERA.GuiderRunning:
         time.sleep(2)    #waiting until the guide exposure is done
         LogStatus(vState,6)
-    #Log2(4,"PP---END wide field exposure")
+    #Log2(5,"PP---END wide field exposure")
     doc = GetGuiderDoc(vState)
     return doc
   except:
@@ -4197,7 +4255,7 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
             solvedPos.setJ2000Decimal(tup[1],tup[2],targetID,cTypeSolved)
             Log2(6,"PinPointSingle - solvedPos:" + solvedPos.dump())
 
-            Log2(4,"Actual J2000 solved values: %s  %s" % (UTIL.HoursToHMS(tup[1],":",":","",1), DegreesToDMS(tup[2])))
+            Log2(5,"Actual J2000 solved values: %s  %s" % (UTIL.HoursToHMS(tup[1],":",":","",1), DegreesToDMS(tup[2])))
 
             #how close are we really to where we think we are?
             # RESYNC            RA--JNow--Dec       RA--J2000--Dec    WIDE/narrow
@@ -4228,10 +4286,10 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
             line1 = "       From     %s %s  %s %s " % (sRA_fromJ, sDec_fromJ, sRA_from2, sDec_from2)
             line2 = "       To       %s %s  %s %s  Solved: %5.2f  sec" % (sRA_toJ, sDec_toJ, sRA_to2, sDec_to2, tSolveEnd - tSolveStart)
             line4 = "       Diff    %9s  %8s %9s  %8s" % (sRA_diffJ,sDec_diffJ,sRA_diff2,sDec_diff2)
-            Log2(4,line0)
-            Log2(4,line1)
-            Log2(4,line2)
-            Log2(4,line4)
+            Log2(5,line0)
+            Log2(5,line1)
+            Log2(5,line2)
+            Log2(5,line4)
 
             LogBase(line0,MOVEMENT_LOG)
             LogBase(line1,MOVEMENT_LOG)
@@ -4470,8 +4528,8 @@ def CountImageStars( camera, expectedPos, targetID, filename, trace, vState ):
     pp.TargetRightAscension = pp.RightAscension
     pp.TargetDeclination = pp.Declination
 
-    Log2(4,"RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
-    Log2(4,"Dec = %s" % DegreesToDMS(pp.Declination))
+    Log2(5,"RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
+    Log2(5,"Dec = %s" % DegreesToDMS(pp.Declination))
     pp.TracePath = r"C:\temp"
     pp.TraceLevel = 1
 
@@ -4773,8 +4831,8 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     pp.TargetRightAscension = pp.RightAscension
     pp.TargetDeclination = pp.Declination
 
-    Log2(4,"J2000 RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
-    Log2(4,"J2000 Dec = %s" % DegreesToDMS(pp.Declination))
+    Log2(5,"J2000 RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
+    Log2(5,"J2000 Dec = %s" % DegreesToDMS(pp.Declination))
     pp.TracePath = r"C:\temp"
     pp.TraceLevel = trace
 
@@ -4827,17 +4885,17 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     numImageStars = len(pp.ImageStars)
     Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
 
-    Log2(4,"pp.ArcsecPerPixelHoriz = %f" % pp.ArcsecPerPixelHoriz)
-    Log2(4,"pp.ArcsecPerPixelVert = %f" % pp.ArcsecPerPixelVert)
-    Log2(4,"Using imageScale = %5.2f with bining %d" % (pp.ArcsecPerPixelHoriz,vState.ppState[camera].binning))
-    Log2(4,"pp.Catalog = %s" % pp.Catalog)
+    Log2(5,"pp.ArcsecPerPixelHoriz = %f" % pp.ArcsecPerPixelHoriz)
+    Log2(5,"pp.ArcsecPerPixelVert = %f" % pp.ArcsecPerPixelVert)
+    Log2(5,"Using imageScale = %5.2f with bining %d" % (pp.ArcsecPerPixelHoriz,vState.ppState[camera].binning))
+    Log2(5,"pp.Catalog = %s" % pp.Catalog)
     #pp.CatalogPath = r"C:\Catalog"
-    Log2(4,"pp.CatalogMaximumMagnitude = %f" % pp.CatalogMaximumMagnitude)
-    Log2(4,"pp.MaxSolveTime= %d" % pp.MaxSolveTime)
+    Log2(5,"pp.CatalogMaximumMagnitude = %f" % pp.CatalogMaximumMagnitude)
+    Log2(5,"pp.MaxSolveTime= %d" % pp.MaxSolveTime)
     try:
-        Log2(4,"pp.FileName = %s" % pp.FileName)
+        Log2(5,"pp.FileName = %s" % pp.FileName)
     except:
-        Log2(4,"filename did not work")
+        Log2(5,"filename did not work")
     #using PP 2.0 may need image to be calibrated first to avoid false positives!
     #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -4855,7 +4913,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 
     if bSolve:
        Log2(0, MultiPPSolve.DisplaySolveCountStr() )
-        
+
     end = time.time()
     #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     if not bSolve:
@@ -4951,12 +5009,12 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
             solvedRA = expectedPos.dRA_J2000()
             solvedDec = expectedPos.dDec_J2000()
             #print count of catalog stars + matched stars
-            Log2(4, "   Matched stars=" + str(len(pp.MatchedStars)))
-            Log2(4, "   Match fit order=" + str(pp.MatchFitOrder) )
-            Log2(4, "   Arcsec/pixel=" + str(abs(round(pp.ArcsecPerPixelHoriz,3))))
-            Log2(4, "   Magnitude zero point=" + str(round(pp.MagZeroPoint,2)))
-            Log2(4, "   Match average residual(arcsec)=" + str(round(pp.MatchAvgResidual,3)))
-            Log2(4, "   Match RMS Residual=" + str(round(pp.MatchRMSResidual,3)))
+            Log2(5, "   Matched stars=" + str(len(pp.MatchedStars)))
+            Log2(5, "   Match fit order=" + str(pp.MatchFitOrder) )
+            Log2(5, "   Arcsec/pixel=" + str(abs(round(pp.ArcsecPerPixelHoriz,3))))
+            Log2(5, "   Magnitude zero point=" + str(round(pp.MagZeroPoint,2)))
+            Log2(5, "   Match average residual(arcsec)=" + str(round(pp.MatchAvgResidual,3)))
+            Log2(5, "   Match RMS Residual=" + str(round(pp.MatchRMSResidual,3)))
             pp.DetachFITS()
             del pp
             return (True, solvedRA, solvedDec, 0)     #ignore solve and assume close enough
@@ -4993,12 +5051,12 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     pp.WriteHistory("SOLVERA,SOLVEDEC values are J2000 from Pinpoint")
 
     #print count of catalog stars + matched stars
-    Log2(4, "   Matched stars=" + str(len(pp.MatchedStars)))
-    Log2(4, "   Match fit order=" + str(pp.MatchFitOrder) )
-    Log2(4, "   Arcsec/pixel=" + str(abs(round(pp.ArcsecPerPixelHoriz,3))))
-    Log2(4, "   Magnitude zero point=" + str(round(pp.MagZeroPoint,2)))
-    Log2(4, "   Match average residual(arcsec)=" + str(round(pp.MatchAvgResidual,3)))
-    Log2(4, "   Match RMS Residual=" + str(round(pp.MatchRMSResidual,3)))
+    Log2(5, "   Matched stars=" + str(len(pp.MatchedStars)))
+    Log2(5, "   Match fit order=" + str(pp.MatchFitOrder) )
+    Log2(5, "   Arcsec/pixel=" + str(abs(round(pp.ArcsecPerPixelHoriz,3))))
+    Log2(5, "   Magnitude zero point=" + str(round(pp.MagZeroPoint,2)))
+    Log2(5, "   Match average residual(arcsec)=" + str(round(pp.MatchAvgResidual,3)))
+    Log2(5, "   Match RMS Residual=" + str(round(pp.MatchRMSResidual,3)))
     #pp.WriteHistory("This is a test history string")
     catRAstring, catDecstring = expectedPos.getJ2000String()
     diffRA = pp.RightAscension - expectedPos.dRA_J2000()
@@ -5039,486 +5097,486 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 #--------------------------------------------------------------------------------------------------------
 def DumpPP(pp):
     #return  #disabled
-    Log2(4,"Dump of all PinPoint Properties:")
-    Log2(4, "Airmass:")
+    Log2(5,"Dump of all PinPoint Properties:")
+    Log2(5, "Airmass:")
     try:
-        Log2(4, str(pp.Airmass))
+        Log2(5, str(pp.Airmass))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ArcsecPerPixelHoriz:")
+    Log2(5, "ArcsecPerPixelHoriz:")
     try:
-        Log2(4, str(pp.ArcsecPerPixelHoriz))
+        Log2(5, str(pp.ArcsecPerPixelHoriz))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ArcsecPerPixelVert:")
+    Log2(5, "ArcsecPerPixelVert:")
     try:
-        Log2(4, str(pp.ArcsecPerPixelVert))
+        Log2(5, str(pp.ArcsecPerPixelVert))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "BackgroundTileSize:")
+    Log2(5, "BackgroundTileSize:")
     try:
-        Log2(4, str(pp.BackgroundTileSize))
+        Log2(5, str(pp.BackgroundTileSize))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "BinningHoriz:")
+    Log2(5, "BinningHoriz:")
     try:
-        Log2(4, str(pp.BinningHoriz))
+        Log2(5, str(pp.BinningHoriz))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "BinningVert:")
+    Log2(5, "BinningVert:")
     try:
-        Log2(4, str(pp.BinningVert))
+        Log2(5, str(pp.BinningVert))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CacheImageStars:")
+    Log2(5, "CacheImageStars:")
     try:
-        Log2(4, str(pp.CacheImageStars))
+        Log2(5, str(pp.CacheImageStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Camera:")
+    Log2(5, "Camera:")
     try:
-        Log2(4, str(pp.Camera))
+        Log2(5, str(pp.Camera))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Catalog:")
+    Log2(5, "Catalog:")
     try:
-        Log2(4, str(pp.Catalog))
+        Log2(5, str(pp.Catalog))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogExpansion:")
+    Log2(5, "CatalogExpansion:")
     try:
-        Log2(4, str(pp.CatalogExpansion))
+        Log2(5, str(pp.CatalogExpansion))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogMaximumMagnitude:")
+    Log2(5, "CatalogMaximumMagnitude:")
     try:
-        Log2(4, str(pp.CatalogMaximumMagnitude))
+        Log2(5, str(pp.CatalogMaximumMagnitude))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogMinimumMagnitude:")
+    Log2(5, "CatalogMinimumMagnitude:")
     try:
-        Log2(4, str(pp.CatalogMinimumMagnitude))
+        Log2(5, str(pp.CatalogMinimumMagnitude))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogPath:")
+    Log2(5, "CatalogPath:")
     try:
-        Log2(4, str(pp.CatalogPath))
+        Log2(5, str(pp.CatalogPath))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogStars:")
+    Log2(5, "CatalogStars:")
     try:
-        Log2(4, str(pp.CatalogStars))
+        Log2(5, str(pp.CatalogStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CatalogStarsReady:")
+    Log2(5, "CatalogStarsReady:")
     try:
-        Log2(4, str(pp.CatalogStarsReady))
+        Log2(5, str(pp.CatalogStarsReady))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CCDTemperature:")
+    Log2(5, "CCDTemperature:")
     try:
-        Log2(4, str(pp.CCDTemperature))
+        Log2(5, str(pp.CCDTemperature))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "CentroidAlgorithm:")
+    Log2(5, "CentroidAlgorithm:")
     try:
-        Log2(4, str(pp.CentroidAlgorithm))
+        Log2(5, str(pp.CentroidAlgorithm))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ColorBand:")
+    Log2(5, "ColorBand:")
     try:
-        Log2(4, str(pp.ColorBand))
+        Log2(5, str(pp.ColorBand))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Columns:")
+    Log2(5, "Columns:")
     try:
-        Log2(4, str(pp.Columns))
+        Log2(5, str(pp.Columns))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Declination:")
+    Log2(5, "Declination:")
     try:
-        Log2(4, str(pp.Declination))
+        Log2(5, str(pp.Declination))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Email:")
+    Log2(5, "Email:")
     try:
-        Log2(4, str(pp.Email))
+        Log2(5, str(pp.Email))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "EngineVersion:")
+    Log2(5, "EngineVersion:")
     try:
-        Log2(4, str(pp.EngineVersion))
+        Log2(5, str(pp.EngineVersion))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Equinox:")
+    Log2(5, "Equinox:")
     try:
-        Log2(4, str(pp.Equinox))
+        Log2(5, str(pp.Equinox))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ExclusionBorder:")
+    Log2(5, "ExclusionBorder:")
     try:
-        Log2(4, str(pp.ExclusionBorder))
+        Log2(5, str(pp.ExclusionBorder))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ExposureInterval:")
+    Log2(5, "ExposureInterval:")
     try:
-        Log2(4, str(pp.ExposureInterval))
+        Log2(5, str(pp.ExposureInterval))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ExposureStartTime:")
+    Log2(5, "ExposureStartTime:")
     try:
-        Log2(4, str(pp.ExposureStartTime))
+        Log2(5, str(pp.ExposureStartTime))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "FileName:")
+    Log2(5, "FileName:")
     try:
-        Log2(4, str(pp.FileName))
+        Log2(5, str(pp.FileName))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "FilterName:")
+    Log2(5, "FilterName:")
     try:
-        Log2(4, str(pp.FilterName))
+        Log2(5, str(pp.FilterName))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "FitOrder:")
+    Log2(5, "FitOrder:")
     try:
-        Log2(4, str(pp.FitOrder))
+        Log2(5, str(pp.FitOrder))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "FullWidthHalfMax:")
+    Log2(5, "FullWidthHalfMax:")
     try:
-        Log2(4, str(pp.FullWidthHalfMax))
+        Log2(5, str(pp.FullWidthHalfMax))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Humidity:")
+    Log2(5, "Humidity:")
     try:
-        Log2(4, str(pp.Humidity))
+        Log2(5, str(pp.Humidity))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageBackgroundMean:")
+    Log2(5, "ImageBackgroundMean:")
     try:
-        Log2(4, str(pp.ImageBackgroundMean))
+        Log2(5, str(pp.ImageBackgroundMean))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageBackgroundSigma:")
+    Log2(5, "ImageBackgroundSigma:")
     try:
-        Log2(4, str(pp.ImageBackgroundSigma))
+        Log2(5, str(pp.ImageBackgroundSigma))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageModified:")
+    Log2(5, "ImageModified:")
     try:
-        Log2(4, str(pp.ImageModified))
+        Log2(5, str(pp.ImageModified))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImagePixel:")
+    Log2(5, "ImagePixel:")
     try:
-        Log2(4, str(pp.ImagePixel))
+        Log2(5, str(pp.ImagePixel))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageStars:")
+    Log2(5, "ImageStars:")
     try:
-        Log2(4, str(pp.ImageStars))
+        Log2(5, str(pp.ImageStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageStarsReady:")
+    Log2(5, "ImageStarsReady:")
     try:
-        Log2(4, str(pp.ImageStarsReady))
+        Log2(5, str(pp.ImageStarsReady))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ImageStatisticalMode:")
+    Log2(5, "ImageStatisticalMode:")
     try:
-        Log2(4, str(pp.ImageStatisticalMode))
+        Log2(5, str(pp.ImageStatisticalMode))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "InnerAperture:")
+    Log2(5, "InnerAperture:")
     try:
-        Log2(4, str(pp.InnerAperture))
+        Log2(5, str(pp.InnerAperture))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MagZeroPoint:")
+    Log2(5, "MagZeroPoint:")
     try:
-        Log2(4, str(pp.MagZeroPoint))
+        Log2(5, str(pp.MagZeroPoint))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MatchAvgResidual:")
+    Log2(5, "MatchAvgResidual:")
     try:
-        Log2(4, str(pp.MatchAvgResidual))
+        Log2(5, str(pp.MatchAvgResidual))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MatchedStars:")
+    Log2(5, "MatchedStars:")
     try:
-        Log2(4, str(pp.MatchedStars))
+        Log2(5, str(pp.MatchedStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MatchedStarsReady:")
+    Log2(5, "MatchedStarsReady:")
     try:
-        Log2(4, str(pp.MatchedStarsReady))
+        Log2(5, str(pp.MatchedStarsReady))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MatchFitOrder:")
+    Log2(5, "MatchFitOrder:")
     try:
-        Log2(4, str(pp.MatchFitOrder))
+        Log2(5, str(pp.MatchFitOrder))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MatchRMSResidual:")
+    Log2(5, "MatchRMSResidual:")
     try:
-        Log2(4, str(pp.MatchRMSResidual))
+        Log2(5, str(pp.MatchRMSResidual))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MaximumPixelValue:")
+    Log2(5, "MaximumPixelValue:")
     try:
-        Log2(4, str(pp.MaximumPixelValue))
+        Log2(5, str(pp.MaximumPixelValue))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MaxMatchResidual:")
+    Log2(5, "MaxMatchResidual:")
     try:
-        Log2(4, str(pp.MaxMatchResidual))
+        Log2(5, str(pp.MaxMatchResidual))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MaxSolveStars:")
+    Log2(5, "MaxSolveStars:")
     try:
-        Log2(4, str(pp.MaxSolveStars))
+        Log2(5, str(pp.MaxSolveStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MaxSolvetime:")
+    Log2(5, "MaxSolvetime:")
     try:
-        Log2(4, str(pp.MaxSolvetime))
+        Log2(5, str(pp.MaxSolvetime))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MinimumBrightness:")
+    Log2(5, "MinimumBrightness:")
     try:
-        Log2(4, str(pp.MinimumBrightness))
+        Log2(5, str(pp.MinimumBrightness))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MinimumStarSize:")
+    Log2(5, "MinimumStarSize:")
     try:
-        Log2(4, str(pp.MinimumStarSize))
+        Log2(5, str(pp.MinimumStarSize))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "MinMatchStars:")
+    Log2(5, "MinMatchStars:")
     try:
-        Log2(4, str(pp.MinMatchStars))
+        Log2(5, str(pp.MinMatchStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Observatory:")
+    Log2(5, "Observatory:")
     try:
-        Log2(4, str(pp.Observatory))
+        Log2(5, str(pp.Observatory))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Observer:")
+    Log2(5, "Observer:")
     try:
-        Log2(4, str(pp.Observer))
+        Log2(5, str(pp.Observer))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "OuterAperture:")
+    Log2(5, "OuterAperture:")
     try:
-        Log2(4, str(pp.OuterAperture))
+        Log2(5, str(pp.OuterAperture))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "PositionAngle:")
+    Log2(5, "PositionAngle:")
     try:
-        Log2(4, str(pp.PositionAngle))
+        Log2(5, str(pp.PositionAngle))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Pressure:")
+    Log2(5, "Pressure:")
     try:
-        Log2(4, str(pp.Pressure))
+        Log2(5, str(pp.Pressure))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ProjectionType:")
+    Log2(5, "ProjectionType:")
     try:
-        Log2(4, str(pp.ProjectionType))
+        Log2(5, str(pp.ProjectionType))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "RightAscension:")
+    Log2(5, "RightAscension:")
     try:
-        Log2(4, str(pp.RightAscension))
+        Log2(5, str(pp.RightAscension))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "RollAngle:")
+    Log2(5, "RollAngle:")
     try:
-        Log2(4, str(pp.RollAngle))
+        Log2(5, str(pp.RollAngle))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Rows:")
+    Log2(5, "Rows:")
     try:
-        Log2(4, str(pp.Rows))
+        Log2(5, str(pp.Rows))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ScratchX:")
+    Log2(5, "ScratchX:")
     try:
-        Log2(4, str(pp.ScratchX))
+        Log2(5, str(pp.ScratchX))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "ScratchY:")
+    Log2(5, "ScratchY:")
     try:
-        Log2(4, str(pp.ScratchY))
+        Log2(5, str(pp.ScratchY))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "SiderealTime:")
+    Log2(5, "SiderealTime:")
     try:
-        Log2(4, str(pp.SiderealTime))
+        Log2(5, str(pp.SiderealTime))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "SigmaAboveMean:")
+    Log2(5, "SigmaAboveMean:")
     try:
-        Log2(4, str(pp.SigmaAboveMean))
+        Log2(5, str(pp.SigmaAboveMean))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "SiteElevation:")
+    Log2(5, "SiteElevation:")
     try:
-        Log2(4, str(pp.SiteElevation))
+        Log2(5, str(pp.SiteElevation))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "SiteLatitude:")
+    Log2(5, "SiteLatitude:")
     try:
-        Log2(4, str(pp.SiteLatitude))
+        Log2(5, str(pp.SiteLatitude))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "SiteLongitude:")
+    Log2(5, "SiteLongitude:")
     try:
-        Log2(4, str(pp.SiteLongitude))
+        Log2(5, str(pp.SiteLongitude))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Solved:")
+    Log2(5, "Solved:")
     try:
-        Log2(4, str(pp.Solved))
+        Log2(5, str(pp.Solved))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TargetDeclination:")
+    Log2(5, "TargetDeclination:")
     try:
-        Log2(4, str(pp.TargetDeclination))
+        Log2(5, str(pp.TargetDeclination))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TargetName:")
+    Log2(5, "TargetName:")
     try:
-        Log2(4, str(pp.TargetName))
+        Log2(5, str(pp.TargetName))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TargetRightAscension:")
+    Log2(5, "TargetRightAscension:")
     try:
-        Log2(4, str(pp.TargetRightAscension))
+        Log2(5, str(pp.TargetRightAscension))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TDIMode:")
+    Log2(5, "TDIMode:")
     try:
-        Log2(4, str(pp.TDIMode))
+        Log2(5, str(pp.TDIMode))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Telescope:")
+    Log2(5, "Telescope:")
     try:
-        Log2(4, str(pp.Telescope))
+        Log2(5, str(pp.Telescope))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "Temperature:")
+    Log2(5, "Temperature:")
     try:
-        Log2(4, str(pp.Temperature))
+        Log2(5, str(pp.Temperature))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TraceLevel:")
+    Log2(5, "TraceLevel:")
     try:
-        Log2(4, str(pp.TraceLevel))
+        Log2(5, str(pp.TraceLevel))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "TracePath:")
+    Log2(5, "TracePath:")
     try:
-        Log2(4, str(pp.TracePath))
+        Log2(5, str(pp.TracePath))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "UseFaintStars:")
+    Log2(5, "UseFaintStars:")
     try:
-        Log2(4, str(pp.UseFaintStars))
+        Log2(5, str(pp.UseFaintStars))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "UseSExtractor:")
+    Log2(5, "UseSExtractor:")
     try:
-        Log2(4, str(pp.UseSExtractor))
+        Log2(5, str(pp.UseSExtractor))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
-    Log2(4, "WCSValid:")
+    Log2(5, "WCSValid:")
     try:
-        Log2(4, str(pp.WCSValid))
+        Log2(5, str(pp.WCSValid))
     except:
-        Log2(4, "n/a")
+        Log2(5, "n/a")
 
 #--------------------------------------------------------------------------------------------------------
 def ExposeFlat(desiredADU, rangeAllowed, hintExp, repeat, filter, binning, flatBaseName, vState):
@@ -5859,13 +5917,16 @@ def TestForMeridianLimit(threshold,verbose,vState):
         if verbose == 1:
             #only log this if called from "MeridianCross"
             Log2(2,"MeridianCross: test disabled")
+        else:
+            Log2(5,"MeridianCross: test disabled")
         return False    #disabled for simulator or testing
 
     if SkipTestForMeridianLimit:
         if verbose == 1:
             #only log this if called from "MeridianCross"
-            Log2(2,"MeridianCross: OTA pointing west so skip test")
-#IS THIS LOG MSG CORRECT? THERE IS NO TEST OF SIDE-OF-SKY
+            Log2(2,"SkipTestForMeridianLimit")
+        else:
+            Log2(5,"SkipTestForMeridianLimit")
         return False    #we cannot have a pier flip situation during this exposure because already pointing west
                     # regardless of any changes in SideOfPier  (well, theoretically, if tracking an object
                     # underneath the pole, that would be a valid case for a pier flip, but I don't plan to
@@ -5876,46 +5937,37 @@ def TestForMeridianLimit(threshold,verbose,vState):
 
     #if vState.MOUNT.SideOfPier == 1:        #1=looking east, 0=looking west
     if SideOfSky(vState) == 1:        #1=looking east, 0=looking west
-##        #2011.05.17 JU:
-##        #ISSUE: if pointed to north below level of Polaris, OTA can easily pass over
-##        #       the pier and trigger this code, even though it is perfectly fine
-##        #       and should be left alone. Add code to test for this:
-##        if vState.MOUNT.Azimuth > 270 and vState.MOUNT.Altitude < 42:
-##            #we are fine even though OTA crossed meridian
-##            if threshold == 0:
-##                #only log this if called from "MeridianCross"
-##                Log2(1,"Note: overriding meridian cross logic for NW part of sky")
-##                Log2(3,"Sidereal Time: " + UTIL.HoursToHMS( vState.MOUNT.SiderealTime))
-##                Log2(3,"Target RA:     " + UTIL.HoursToHMS( vState.MOUNT.RightAscension))
-##                Log2(3,"Target Dec:   " + DegreesToDMS( vState.MOUNT.Declination))
-##                Log2(3,"Altitude:      " + str(round(vState.MOUNT.Altitude,2)))
-##                Log2(3,"Azimuth:       " + str(round(vState.MOUNT.Azimuth,2)))
-##            return False
+        ###Log2(5,"SideOfSky = 1, looking east")
         HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
         if HA < -12:  HA += 24
         if HA > 12: HA -= 24
 
         if HA > threshold:  #only care about positive difference; negative HA values are all safe for this side of pier
             #this will abort the current exposure to prevent hardware damage
-            Log2(4,"Sidereal Time: " + UTIL.HoursToHMS( vState.MOUNT.SiderealTime,":",":","",1))
-            Log2(4,"Target RA:     " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-            Log2(4,"Target Dec:   " + DegreesToDMS( vState.MOUNT.Declination))
-            Log2(4,"Hour angle:    " + str(UTIL.HoursToHM( HA )))
-            Log2(4,"Test threshold:" + str(threshold) + ", HA is larger than this: " + str(HA))
-            Log2(4,"Altitude:      " + str(round(vState.MOUNT.Altitude,2)))
-            Log2(4,"Azimuth:       " + str(round(vState.MOUNT.Azimuth,2)))
-            Log2(4,"Current pier side=%d/%d" % (vState.MOUNT.SideOfPier,SideOfSky(vState)))
+            Log2(5,"Sidereal Time: " + UTIL.HoursToHMS( vState.MOUNT.SiderealTime,":",":","",1))
+            Log2(5,"Target RA:     " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+            Log2(5,"Target Dec:   " + DegreesToDMS( vState.MOUNT.Declination))
+            Log2(5,"Hour angle:    " + str(UTIL.HoursToHM( HA )))
+            Log2(5,"Test threshold:" + str(threshold) + ", HA is larger than this: " + str(HA))
+            Log2(5,"Altitude:      " + str(round(vState.MOUNT.Altitude,2)))
+            Log2(5,"Azimuth:       " + str(round(vState.MOUNT.Azimuth,2)))
+            Log2(5,"Current pier side=%d/%d" % (vState.MOUNT.SideOfPier,SideOfSky(vState)))
 
             Error("******************************")
             Error("***   PIER FLIP REQUIRED   ***")
             Error("******************************")
             Log2Summary(0,"PIER FLIP REQUIRED, HA=" + UTIL.HoursToHMS( HA,":",":","",1))
-
+            Log2(0,"Pier flip required")
             return True    #we have crossed the meridian!!
+        #else:
+        #    Log2(5,"Do not need pier flip: threshold=" + str(threshold) + " is smaller than HA=" + str(HA))
+    else:
+        Log2(4,"SideOfSky = 0, looking west; do not test")
     if threshold == 0:
         #only log this if called from "MeridianCross"
         #Log2(2,"MeridianCross: no violation")
         pass
+    ###Log2(5,"Normal exit")
     return False
 
 #--------------------------------------------------------------------------------------------------------
@@ -6270,7 +6322,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     vState.gotoPosition = desiredScopePos
     vState.gotoPosition.isValid = False     #disable this for now so guiding during Narrow PP doesn't encounter this
     vState.gotoPosition.posName = name
-    Log2(4,"vState.gotoPosition.isValid set to FALSE")
+    Log2(5,"vState.gotoPosition.isValid set to FALSE")
 
     imaging_db.RecordGuider(vState,False,1051)
 
@@ -6310,8 +6362,8 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(3,"J2000 RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_J2000_destination,":",":","",1), DegreesToDMS(dDec_J2000_destination)))
     Log2(3,"JNow  RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_JNow_destination, ":",":","",1), DegreesToDMS(dDec_JNow_destination) ))
     #Log2(3,"Decimal JNow RA=%6.3f  Dec=%6.3f" % (dRA_JNow_destination, dDec_JNow_destination))
-    Log2(4,"desiredScopePos.dump():")
-    Log2(4,desiredScopePos.dump())
+    Log2(5,"desiredScopePos.dump():")
+    Log2(5,desiredScopePos.dump())
 
 
 #start of subroutine here----------------------------
@@ -6355,9 +6407,9 @@ def GOTO2(desiredScopePos,vState,name=""):
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
-           Log2(4,"%s  %s  Mount still moving: %5.2f arcmin" % (vState.UTIL.HoursToHMS(toRA,":",":","",1), DegreesToDMS(toDec), delta))
+           Log2(5,"%s  %s  Mount still moving: %5.2f arcmin" % (vState.UTIL.HoursToHMS(toRA,":",":","",1), DegreesToDMS(toDec), delta))
        else:
-           Log2(4,"%s  %s  Mount is not moving" % (vState.UTIL.HoursToHMS(toRA,":",":","",1), DegreesToDMS(toDec)))
+           Log2(5,"%s  %s  Mount is not moving" % (vState.UTIL.HoursToHMS(toRA,":",":","",1), DegreesToDMS(toDec)))
        fromRA = toRA    #for next check
        fromDec = toDec
 
@@ -6431,11 +6483,11 @@ def GOTO2(desiredScopePos,vState,name=""):
     line2 = "       Desired  %s %s  %s %s  Duration: %d"                % (sRA_desiredJ, sDec_desiredJ, sRA_desired2, sDec_desired2, slewTime)
     line3 = "       To       %s %s  %s %s  side: %d  Alt: %4s  Az: %5s" % (sRA_afterJ, sDec_afterJ, sRA_after2, sDec_after2, afterSideOfPier, sAlt_to, sAz_to)
     line4 = "       Diff    %9s  %8s %9s  %8s         = %6.2f/%6.2f arcmin" % (sRA_diffJ,sDec_diffJ,sRA_diff2,sDec_diff2,delta1,delta2)
-    Log2(4,line0)
-    Log2(4,line1)
-    Log2(4,line2)
-    Log2(4,line3)
-    Log2(4,line4)
+    Log2(5,line0)
+    Log2(5,line1)
+    Log2(5,line2)
+    Log2(5,line3)
+    Log2(5,line4)
 
     LogBase(line0,MOVEMENT_LOG)
     LogBase(line1,MOVEMENT_LOG)
@@ -6638,13 +6690,13 @@ def LoadIncludeFile( IncludeFilename, cmdList ):
         Log2(6,line)
 
     cmdFile2.close()
-    #Log2(4,"* End of INCLUDE file                 *")
-    #Log2(4,"***************************************")
+    #Log2(5,"* End of INCLUDE file                 *")
+    #Log2(5,"***************************************")
 
 def LoadList( CommandFilename, cmdList ):
-    Log2(4,"***************************************")
-    Log2(4,"* Command file used for this session: *")
-    Log2(4,"* Filename = %-24s *" % CommandFilename)
+    Log2(5,"***************************************")
+    Log2(5,"* Command file used for this session: *")
+    Log2(5,"* Filename = %-24s *" % CommandFilename)
     cmdFile = open( CommandFilename, "r")
     for line in cmdFile:
         i = line.find('#')
@@ -6671,8 +6723,8 @@ def LoadList( CommandFilename, cmdList ):
             Log2(5,line)
 
     cmdFile.close()
-    Log2(4,"* End of command file                 *")
-    Log2(4,"***************************************")
+    Log2(5,"* End of command file                 *")
+    Log2(5,"***************************************")
 
     #print "Command list loaded with:"
     #print cmdList
@@ -6722,7 +6774,7 @@ def WriteRetryFile(copyList,index):
     #Don't write out the file if the current line is a setting (contains '=')
     #(might get file locking issues otherwise because that section runs so quickly)
     if copyList[index].find("=") >= 0:
-        Log2(4,"Skipping rewrite of file because of setting line" )
+        Log2(5,"Skipping rewrite of file because of setting line" )
         return;
 
     #write list contents from index thru end of list to file Exec_reload.txt
@@ -6753,6 +6805,78 @@ def WriteRetryFile(copyList,index):
     Log2(3,"Rewrote file '%s' with %d lines remaining" % (RELOADFILE,n))
 
 #-----------------------------------------------
+#TODO: change the below to format as HTML (and/or PHP)
+def WriteWebPage( webList, currentLine ):
+    webfile = "C:/Apache24/htdocs/ExecPage.html"
+    f = open(webfile,"w")
+    f.write("<html>")
+    f.write("<body>\n")
+    f.write("<h1>Observatory activity</h1>\n")
+    f.write("<h2>%s</h2>\n" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    f.write("<table>\n")
+    f.write("<tr>\n")
+    #(line#,sCompleted,sActive,sStartStr,sEndStr,Command))
+
+    f.write("<th>Line</th>\n" )
+    f.write("<th>Completed?</th>\n")
+    f.write("<th>Active?</th>\n")
+    f.write("<th>Start Time</th>\n")
+    f.write("<th>End Time</th>\n")
+    f.write("<th>Command</th>\n")
+    f.write("</tr>\n")
+
+    #  entry: [ nIndex, bExecuted, bActive, tStart_time, tEnd_time, sLine_text ]
+    #              0          1         2          3          4          5
+
+    for entry in webList:
+        if entry[0] < (currentLine - 10):   #only show most recent 10 commands in past, to focus on current/future commands
+            continue
+
+        if entry[1]:
+            sCompleted = "Completed"
+        else:
+            sCompleted = "todo"
+
+        if entry[2]:
+            sActive = "YES"
+        else:
+            sActive = "no "
+
+        if entry[3]:
+            sStartStr = entry[3].strftime('%H:%M')
+        else:
+            sStartStr = "     "
+
+        if entry[4]:
+            sEndStr = entry[4].strftime('%H:%M')
+        else:
+            sEndStr = "     "
+
+        if entry[2]:
+            f.write("<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr>\n")  #entra blank line before and after the ACTIVE command
+            f.write('<td style="background-color:Orange;">%d</td>\n' % entry[0])
+            f.write('<td style="background-color:Orange;">%s</td>\n' % sCompleted)
+            f.write('<td style="background-color:Orange;">%s</td>\n' % sActive)
+            f.write('<td style="background-color:Orange;">%s</td>\n' % sStartStr)
+            f.write('<td style="background-color:Orange;">%s</td>\n' % sEndStr)
+            f.write('<td style="background-color:Orange;">%s</td>\n' % entry[5].strip())
+            f.write("</tr><tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>\n")  #entra blank line before and after the ACTIVE command
+        else:
+            f.write("<tr>\n")
+            f.write("<td>%d</td>\n" % entry[0])
+            f.write("<td>%s</td>\n" % sCompleted)
+            f.write("<td>%s</td>\n" % sActive)
+            f.write("<td>%s</td>\n" % sStartStr)
+            f.write("<td>%s</td>\n" % sEndStr)
+            f.write("<td>%s</td>\n" % entry[5].strip())
+            f.write("</tr>\n")
+
+        #f.write("<br>Line %2d; Completed: %s; Active %s; Started %s; Finished %s; Cmd: %s" %
+        #    (entry[0],sCompleted,sActive,sStartStr,sEndStr,entry[5].strip()))
+    f.write("</table></body></html>\n")
+    f.close()
+
+#-----------------------------------------------
 def ExecuteList( theList ):
     Log2(0,"  ")
     Log2(0,"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
@@ -6774,13 +6898,37 @@ def ExecuteList( theList ):
     copyList = theList
     index = 0
 
+    #Separate list of lists:
+    #  Sublist: [ nIndex, bExecuted, bActive, tStart_time, tEnd_time, sLine_text ]
+    #              0          1         2          3          4          5
+    webList = []
+    index2 = 0
+    for line in theList:
+        entry = [index2,False,False,None,None,line]
+        webList.append(entry)
+        index2 += 1
+
     #loop over this list; empty lines already stripped out before getting here
     for line in theList:
       Log2Summary(0,"Command: " + line)
       WriteRetryFile(copyList,index)    #write out the remaining steps in case we halt and want to restart from here
       state.gotoPosition.isValid = False    #this only set True when GOTO executed as part of command, and then only for duration of that command
+
+      #For entry in webList[index], set bActive = True, tStart_time = currenttime
+      webList[index][2] = True      #bActive
+      webList[index][3] = datetime.datetime.now()   #tStart_time
+      WriteWebPage( webList, index )   #Rewrite webpage
+
       Process( line, state)
+
+      #For entry in webList[index], set bExecuted = True, bActive = false, tEnd_time = currenttime
+      webList[index][1] = True  #bExecuted
+      webList[index][2] = False #bActive
+      webList[index][4] = datetime.datetime.now()   #tEnd_time
+      WriteWebPage( webList, index )   #Rewrite webpage
+
       index += 1
+
 
     #delete the Restart file here; not needed any more since finished everything
     try:
@@ -6788,7 +6936,7 @@ def ExecuteList( theList ):
     except:
         pass    #OK if we never created it
 
-    Log2(0,"~~~~~~~~~~Normal Execution Ends (Exec5.py)~~~")
+    Log2(0,"~~~~~~~~~~Normal Execution Ends (Exec8D.py)~~~")
     print "!!! DONE"
 
 #--------------------------------------------------------------------------------------------------------
@@ -6950,8 +7098,8 @@ def Process( Line, vState ):
             if cmdField == upCmd:
                 #we found the specified command to get its impl function to call
                 Log2(0," ")
-                Log2(0,"(Exec5.py)*** Command: %s" % (Line))
-                Log2(1,"Filter = %d" % vState.CAMERA.Filter)
+                Log2(0,"*** Execute Command: %s" % (Line))
+                #Log2(1,"Filter = %d" % vState.CAMERA.Filter)
 
                 tup = tuple(Line.split(','))
                 # 2010.05.19 JU: trim whitespace from all parameter fields
@@ -6963,20 +7111,24 @@ def Process( Line, vState ):
 
                 while True:
                     try:
+                        Log2(4,"Process() about to execute command: " + cmd)
                         tret = fn(tupClean,vState)
-                        
+                        Log2(4,"Process() returned from executing command, tret = %s" % str(tret))
+
                     except RerunCommand:    #(not sure if I want to use this feature yet)
                         #is sun too high?
                         if TestSunAltitude(-6):
                             Error("We wanted to rerun this command but sun altitude too high for retry of this command")
                             tret = (1,)
                             break
+                        Log2(0,"RerunCommand")
                         Error("*************************************")
                         Error("*       Rerunning this command      *")
                         Error("*************************************")
                         continue
-                    
+
                     except HorizonError:
+                        Log2(0,"HorizonError")
                         Error("*************************************")
                         Error("*           Horizon error           *")
                         Error("*        Skipping this target       *")
@@ -6984,6 +7136,7 @@ def Process( Line, vState ):
                         break
 
                     except WeatherError:
+                        Log2(0,"WeatherError")
                         Error("Weather exception thrown; park mount for safety")
                         SafetyPark( vState )
                         if vState.WaitIfCloudy:
@@ -7021,12 +7174,15 @@ def Process( Line, vState ):
 
                     if tret[0] == 2:
                        #Error occurred (bad argument); stop processing
+                       Log2(0,"Process(): error occurred, bad argument; stop processing")
                        return
 
                     #else no need to re-execute this step, go on to next one
+                    Log2(4,"Process(), moving on to execute next step")
                     break
 
                 #else keep executing normally
+                Log2(4,"Process(), keep executing normally")
 
                 #show how many error messages (if any) occurred during this step
                 global errorCount
@@ -7100,7 +7256,7 @@ def execArchive(t,vState):
         Log2(0, MultiPPSolve.DisplaySolveCountStr() )
     except:
         pass
-        
+
     Log2(0,"About to run __FinishSession.bat")
     from subprocess import Popen
     p = Popen(r"C:\fits_script\__FinishSession.bat")
@@ -7470,11 +7626,11 @@ def execWaitUntil(t,vState):
    endTimeUtcSec = (int(wantedTup[0]) * 3600) + (int(wantedTup[1]) * 60)
    if len(wantedTup) == 3:
        endTimeUtcSec += int(wantedTup[2])
-   Log2(4,"endTimeUtcSec = %d" %endTimeUtcSec)
+   Log2(5,"endTimeUtcSec = %d" %endTimeUtcSec)
 
    #if before start of UTC day AND WAIT TIME IS AFTER START OF UTC DAY, first wait for new day
    currentTup = time.gmtime(time.time())
-   Log2(4, "currentTup: %s" % currentTup)
+   Log2(5, "currentTup: %s" % currentTup)
    while currentTup[3] > 18 and int(wantedTup[0]) < 18:
        Log2(2,"Waiting until start of next UTC day; current time %02d:%02d:%02d" % (currentTup[3],currentTup[4],currentTup[5]))
        time.sleep(30)
@@ -7488,10 +7644,10 @@ def execWaitUntil(t,vState):
        nowSec = (currentTup[3] * 3600) + (currentTup[4] * 60) + currentTup[5]
        if nowSec >= endTimeUtcSec:
           Log2(3,"Reached time after waiting")
-          Log2(4, "nowSec >= endTimeUtcSec")
-          Log2(4,  "nowSec = %d" % nowSec)
-          Log2(4,  "endTimeUtcSec = %d" % endTimeUtcSec)
-          Log2(4,  "currentTup: %s" % currentTup)
+          Log2(5, "nowSec >= endTimeUtcSec")
+          Log2(5,  "nowSec = %d" % nowSec)
+          Log2(5,  "endTimeUtcSec = %d" % endTimeUtcSec)
+          Log2(5,  "currentTup: %s" % currentTup)
           break
 
        Log2(1,"Still waiting; current time %02d:%02d:%02d, wait until %s" % (currentTup[3],currentTup[4],currentTup[5],t[1]))
@@ -7555,11 +7711,11 @@ def SetGuiderExclude(offset,t,vState): #if optional arguments provided, restrict
         Log2(5,"after getting values")
 
         if top == 0 and bottom == 0 and left == 0 and right == 0:
-            Log2(4,"Nothing specified")
+            Log2(5,"Nothing specified")
             return  #nothing specified, use MaxIm logic for guide star selection
                     #Note: 0 is not a valid value to use; too close to edge of field for guiding
 
-        Log2(4,"top=%d, bottom=%d, left=%d, right=%d, rflag=%s" % (top,bottom,left,right,rflag))
+        Log2(5,"top=%d, bottom=%d, left=%d, right=%d, rflag=%s" % (top,bottom,left,right,rflag))
 
         #something was specified, so use that value AND use 15 for any that weren't
         #(at least 1 of the values was specified or we wouldn't be here)
@@ -7582,10 +7738,10 @@ def SetGuiderExclude(offset,t,vState): #if optional arguments provided, restrict
 
         if len(rflag) > 0 and  rflag.upper()[0] == "R":
             vState.GuideExcludeReverse    = True  #if true, exclude middle of image and use edges
-            Log2(4,"Use Reverse area")
+            Log2(5,"Use Reverse area")
         else:
             vState.GuideExcludeReverse    = False
-            Log2(4,"Use Normal area")
+            Log2(5,"Use Normal area")
 
     except:
         Log2(0,"*** Exception calling SetGuiderExclude; ignoring it !!!")
@@ -8015,7 +8171,7 @@ def exec_Cropped_Cat_EndTime_Single(t,vState):
    dic["PP-Solve"] = getPPSolve(vState)
 
    SetGuiderExclude(6,t,vState) #if optional arguments provided, restrict region of guider field where guide star can be chosen from
-
+   Log2(4,"exec_Cropped_Cat_EndTime_Single about to call implExp")
    return implExp(dic,vState)
   except ArgumentError:
    return (2,)
@@ -9134,11 +9290,11 @@ def GetNextTargetFromList(vState,TargetList,listname):
                   # as long as they are available during the night)
                   myObj = obj   #preserve it
                   if listname != "MosaicList":
-                      Log2(4,"TargetList cnt before remove: %d" % len(TargetList))
-                      Log2(4,"Removing item number: %d" % TargetList.index(obj))
-                      Log2(4,"Removing item Name: %s  RA=%f" % (obj.name,obj.dRA))
+                      Log2(5,"TargetList cnt before remove: %d" % len(TargetList))
+                      Log2(5,"Removing item number: %d" % TargetList.index(obj))
+                      Log2(5,"Removing item Name: %s  RA=%f" % (obj.name,obj.dRA))
                       TargetList.remove(obj)
-                      Log2(4,"TargetList cnt AFTER remove: %d" % len(TargetList))
+                      Log2(5,"TargetList cnt AFTER remove: %d" % len(TargetList))
                       Log2(1,"**Next target: %s from list: %s; RA: %s" % (myObj.name,listname,UTIL.HoursToHMS(obj.dRA,":",":","",1)))
                   myObj.dump()
                   return myObj
@@ -9167,11 +9323,11 @@ def GetNextTargetFromList(vState,TargetList,listname):
               if CheckApproxHorizon(obj.dRA,vState):
                   #use it
                   myObj = obj   #preserve it
-                  Log2(4,"TargetList cnt before remove: %d" % len(TargetList))
-                  Log2(4,"Removing item number: %d" % TargetList.index(obj))
-                  Log2(4,"Removing item Name: %s  RA=%f" % (obj.name,obj.dRA))
+                  Log2(5,"TargetList cnt before remove: %d" % len(TargetList))
+                  Log2(5,"Removing item number: %d" % TargetList.index(obj))
+                  Log2(5,"Removing item Name: %s  RA=%f" % (obj.name,obj.dRA))
                   TargetList.remove(obj)
-                  Log2(4,"TargetList cnt AFTER remove: %d" % len(TargetList))
+                  Log2(5,"TargetList cnt AFTER remove: %d" % len(TargetList))
                   Log2(1,"**Next target: %s from list: %s; RA: %s" % (myObj.name,listname,UTIL.HoursToHMS(obj.dRA,":",":","",1)))
                   obj.dump()
                   return myObj
@@ -9340,7 +9496,7 @@ def execAutoUntil(t,vState):
                 #global gbAutoUntil
                 gbAutoUntil = False
                 return (0,)     #too late in morning (or too early in evening, and should not have started yet!)
-        Log2(4,"Current solar altitude = %5.2f" % alt)
+        Log2(5,"Current solar altitude = %5.2f" % alt)
 
         #Should we refocus yet (maybe every 2 hours)
         #This is now handled as part of positioning on a new target in implExp_InitialMovement
@@ -10591,7 +10747,7 @@ def FindNearFocusStar(vState,tpos,minRA,maxRA):
         #new minimum found
             minStar = star
             minDistance = newDiff
-            Log2(4,"New min: diff=%5.3f  Want=(%5.2f,%5.2f) Star=(%5.2f,%5.2f) %s" % (newDiff,tpos.dRA_J2000(),tpos.dDec_J2000(),star.dRA,star.dDec,star.name))
+            Log2(5,"New min: diff=%5.3f  Want=(%5.2f,%5.2f) Star=(%5.2f,%5.2f) %s" % (newDiff,tpos.dRA_J2000(),tpos.dDec_J2000(),star.dRA,star.dDec,star.name))
 
     #all stars have been checked; what did we find?
     if minDistance == 99999:
@@ -10628,7 +10784,7 @@ def BuildFocusStarBand(wantPos,vState):
 
    meridian = vState.MOUNT.SiderealTime
 
-   Log2(4,"BuildFocusStarBand: target RA: %5.2f   Meridian: %5.2f" % (wantPos.dRA_J2000(),meridian))
+   Log2(5,"BuildFocusStarBand: target RA: %5.2f   Meridian: %5.2f" % (wantPos.dRA_J2000(),meridian))
 
    if minRA < maxRA:   #did not span 0h
       #  <--|-----------+-------+--------------|
@@ -10640,7 +10796,7 @@ def BuildFocusStarBand(wantPos,vState):
         #  <--|-----------+-------+-------|-------|
         #     0h         max     min      M         meridian < min
          #simple case, meridian not included, so return values
-         Log2(4,"BFSB 1a: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+         Log2(5,"BFSB 1a: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
          return (minRA,maxRA)
       else: # spans meridian; recalc band based side of meridian that target is on
          #  <-------------+---|----+--------------|
@@ -10653,7 +10809,7 @@ def BuildFocusStarBand(wantPos,vState):
              maxRA = meridian
              minRA = meridian - 2
              if minRA < 0:  minRA += 24     #in case new band crosses 0h
-             Log2(4,"BFSB 1b: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+             Log2(5,"BFSB 1b: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
              return (minRA,maxRA)
          else:
              #  <--------+------+-----|--------------|
@@ -10663,7 +10819,7 @@ def BuildFocusStarBand(wantPos,vState):
              minRA = meridian
              maxRA = meridian + 2
              if maxRA >= 24: maxRA -= 24    #in case new band crosses 0h (2014.10.20 fixed test!)
-             Log2(4,"BFSB 1c: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+             Log2(5,"BFSB 1c: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
              return (minRA,maxRA)
 
 
@@ -10677,7 +10833,7 @@ def BuildFocusStarBand(wantPos,vState):
          #  <-------------+---|-----+-------|-------|
          #               max  0h   min      M         meridian < min
          #not including meridian, so just return the values
-         Log2(4,"BFSB 2: %5.2f -> %5.2f -> %5.2f" % (minRA,wantPos.dRA_JNow(),maxRA))
+         Log2(5,"BFSB 2: %5.2f -> %5.2f -> %5.2f" % (minRA,wantPos.dRA_JNow(),maxRA))
          return (minRA,maxRA)
       else: #spans meridian (as well as 0h)
          #  <-------------+---|--|---+--------------|
@@ -10697,21 +10853,21 @@ def BuildFocusStarBand(wantPos,vState):
                  minRA = meridian
                  maxRA = meridian + 2
                  if maxRA >= 24: maxRA -= 24    #SHOULDN'T HAPPEN   (2014.10.20 fixed test!)
-                 Log2(4,"BFSB 2A: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 2A: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
              elif wantPos.dRA_J2000() <= meridian and wantPos.dRA_J2000() < 12:
                  #Case 'B', target west of meridian
                  maxRA = meridian
                  minRA = meridian - 2
                  if minRA < 0:  minRA += 24
-                 Log2(4,"BFSB 2B: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 2B: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
              else:
                  #Case 'C', target west of meridian
                  maxRA = meridian
                  minRA = meridian - 2
                  if minRA < 0:  minRA += 24     #SHOULDN'T BE ABLE TO HAPPEN
-                 Log2(4,"BFSB 2C: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 2C: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
          else:
              #meridian is high value, so must be west(right) of 0h
@@ -10725,14 +10881,14 @@ def BuildFocusStarBand(wantPos,vState):
                  maxRA = meridian + 2
                  if minRA >= 24:  minRA -= 24       #(2014.10.20 added to prevent reaching 24.0)
                  if maxRA >= 24: maxRA -= 24    #in case new band crosses 0h    (2014.10.20 fixed test!)
-                 Log2(4,"BFSB 3A: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 3A: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
              elif wantPos.dRA_J2000() > meridian and wantPos.dRA_J2000() > 12:
                  #Case 'B', target east of meridian, west of 0h
                  minRA = meridian
                  maxRA = meridian + 2
                  if maxRA >= 24: maxRA -= 24    #in case new band crosses 0h    (2014.10.20 fixed test!)
-                 Log2(4,"BFSB 3B: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 3B: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
              else:
                  #Case 'C', target west of meridian
@@ -10740,7 +10896,7 @@ def BuildFocusStarBand(wantPos,vState):
                  minRA = meridian - 2
                  if minRA < 0:  minRA += 24     #SHOULDN'T BE ABLE TO HAPPEN
                  if maxRA >= 24: maxRA -= 24    #in case new band crosses 0h  (added 2014.10.20)
-                 Log2(4,"BFSB 3C: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
+                 Log2(5,"BFSB 3C: %5.2f -> %5.2f -> %5.2f   Meridian=%5.2f" % (minRA,wantPos.dRA_JNow(),maxRA,meridian))
                  return (minRA,maxRA)
 
 #--------------------------------------------------------------------------------------------------------
@@ -10806,7 +10962,7 @@ def callFocusMax(dic,vState):
     global excessiveFocusRetries
 
 	#REMOVED 2015.06.21 JU: plan to use Set_Filter=V or Set_Filter=L from now on before using focus cmd
-    #Log2(4,"Set Filter = 3 (Luminance) for FocusMax use")  #!!!otherwise used whatever filter was in place, even Ha!!!!
+    #Log2(5,"Set Filter = 3 (Luminance) for FocusMax use")  #!!!otherwise used whatever filter was in place, even Ha!!!!
     #vState.CAMERA.Filter = 3
     Log2(1,"@@@ Filter in use for FocusMax: %d, filter specified = %d" % (vState.CAMERA.Filter,vState.filter) )
 
@@ -11229,7 +11385,7 @@ def FocusCompensation(vState):
         return
 
     if vState.FocusCompensationActive == 3 and vState.AdvancedFocusState == 0:
-        Log2(6,"Benchmark focus has not occurred yet, nothing to do for FocusCompensation")
+        Log2(5,"Benchmark focus has not occurred yet, nothing to do for FocusCompensation")
         return
 
     Log2(6,"Checking FocusCompensation()")
@@ -11608,12 +11764,12 @@ def implBias(dic,vState):
         vState.CAMERA.StartY = tupc[1]
         vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
         vState.CAMERA.NumY = tupc[3]
-        Log2(4,"Cropping settings:")
-        Log2(4,"   bin = %d" % dic["bin"])
-        Log2(4,"   StartX = %d" % tupc[0])
-        Log2(4,"   StartY = %d" % tupc[1])
-        Log2(4,"   NumX = %d" % tupc[2])
-        Log2(4,"   NumY = %d" % tupc[3])
+        Log2(5,"Cropping settings:")
+        Log2(5,"   bin = %d" % dic["bin"])
+        Log2(5,"   StartX = %d" % tupc[0])
+        Log2(5,"   StartY = %d" % tupc[1])
+        Log2(5,"   NumX = %d" % tupc[2])
+        Log2(5,"   NumY = %d" % tupc[3])
     else:
         vState.CAMERA.BinX = argBin
         vState.CAMERA.BinY = argBin
@@ -11707,12 +11863,12 @@ def implDarks(dic,vState):
                 vState.CAMERA.StartY = tupc[1]
                 vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
                 vState.CAMERA.NumY = tupc[3]
-                Log2(4,"Cropping settings:")
-                Log2(4,"   bin = %d" % dic["bin"])
-                Log2(4,"   StartX = %d" % tupc[0])
-                Log2(4,"   StartY = %d" % tupc[1])
-                Log2(4,"   NumX = %d" % tupc[2])
-                Log2(4,"   NumY = %d" % tupc[3])
+                Log2(5,"Cropping settings:")
+                Log2(5,"   bin = %d" % dic["bin"])
+                Log2(5,"   StartX = %d" % tupc[0])
+                Log2(5,"   StartY = %d" % tupc[1])
+                Log2(5,"   NumX = %d" % tupc[2])
+                Log2(5,"   NumY = %d" % tupc[3])
             else:
                 vState.CAMERA.BinX = argBin
                 vState.CAMERA.BinY = argBin
@@ -11978,7 +12134,7 @@ def implImagerExposure(index,dic,vState):
             # but the values will all be the same.
 
         ##vState.CAMERA.Filter = filterToInt(dic["filter"])
-        ##Log2(4,"Filter wheel reports position: %d" % vState.CAMERA.Filter)
+        ##Log2(5,"Filter wheel reports position: %d" % vState.CAMERA.Filter)
         #2014.09.23 JU: redo above to shorten execution time
         sFilter = dic["filter"]
         iFilter = filterToInt(sFilter)
@@ -11986,9 +12142,9 @@ def implImagerExposure(index,dic,vState):
         Log2(1,"Set filter wheel to position: %s -- %d, pier side=%d/%d" % (sFilter,iFilter,vState.MOUNT.SideOfPier,SideOfSky(vState)))
 
 
-        Log2(4,"@@@ Filter in use before CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )
+        Log2(5,"@@@ Filter in use before CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )
         vState.CAMERA.Expose( theExposure, 1, iFilter )   # 1 = light frame
-        Log2(4,"@@@ Filter in use AFTER CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )
+        Log2(5,"@@@ Filter in use AFTER CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )
 
         #wait for exposure to complete
         #Note: even for very short exposures, there are several seconds at the start
@@ -12003,18 +12159,22 @@ def implImagerExposure(index,dic,vState):
             time.sleep(1)
             if LogStatus(vState,2):       #this reports if guiding problem
                 vState.CAMERA.AbortExposure()
+                Log2(4,"Aborting exposure, apparent guiding problem")
                 if RecoverFromBadGuiding(dic,vState):
+                    Log2(0,"Unable to recover from bad guiding")
                     return (2,)     #problem; unable to recover
 
                 #we recovered OK, but need to re-set binning because it was changed during PP solve during recover
                 vState.CAMERA.BinX = dic["bin"]     #may not need these
                 vState.CAMERA.BinY = dic["bin"]
+                Log2(4,"Apparently we have recovered from bad guiding, attempt to resume")
                 return (0,)     #added return after recover; THIS may have been the problem
 
             #decide if need to stop for skip ahead event
             tup = TestSkipAhead(vState)
             if tup[0] != 0:
                 #skip ahead event found, or error
+                Log2(4,"Skip ahead event found, or error; returning %d" % tup[0])
                 vState.CAMERA.AbortExposure()
                 return tup
 
@@ -12024,6 +12184,7 @@ def implImagerExposure(index,dic,vState):
                 # but let the next action after the current one decide where to move to.
                 # If we are looping over single exposures, the caller will
                 # Flip And Reacquire Target if there are more images to take
+                Log2(4,"MeridianSafety alert; aborting exposure")
                 LogConditions(vState)
                 vState.CAMERA.AbortExposure()
                 return (0,)
@@ -12061,9 +12222,10 @@ def implImagerExposure(index,dic,vState):
         vState.CAMERA.SaveImage(filename_i)
         LogConditions(vState)
         StatusLog(filename_i)
-
+        Log2(4,"At end of single exposure logic")
 
     RecentImaged_Add(dic["ID"])
+    Log2(4,"At normal end of implImagerExposure")
     return (0,)
 
 #--------------------------------------------------------------------------------------------------------
@@ -12192,7 +12354,7 @@ def implGuiderExposure(index,dic,vState,bLast):
 ##        doc.SaveFile( filename_i, 3, False, 1, 0)
 ##        Log2(6,"implGuiderExposure - solved Pos:" + spos.dump())
 ##    else:
-##        Log2(4,"Guider image just taken could not be solved with PP")
+##        Log2(5,"Guider image just taken could not be solved with PP")
 
         #SYNC mount if success
         if tup[0]:
@@ -12216,7 +12378,7 @@ def implGuiderExposure(index,dic,vState,bLast):
             delta_RA = 5. * 1./3600.  #5 seconds of time
             delta_Dec = 10 * 1./3600. #10 arcseconds
             if abs(DiffRA) < delta_RA and abs(DiffDec) < delta_Dec:
-                Log2(4,"No reposition after PP solve; close enough already")
+                Log2(5,"No reposition after PP solve; close enough already")
             else:
                 GOTO( dic["pos"], vState, "WIDE repos: " + dic["ID"] )
 
@@ -12793,12 +12955,12 @@ def implExp_LightExposures(dic,vState):
         vState.CAMERA.StartY = tupc[1]
         vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
         vState.CAMERA.NumY = tupc[3]
-        Log2(4,"Cropping settings:")
-        Log2(4,"   bin = %d" % dic["bin"])
-        Log2(4,"   StartX = %d" % tupc[0])
-        Log2(4,"   StartY = %d" % tupc[1])
-        Log2(4,"   NumX = %d" % tupc[2])
-        Log2(4,"   NumY = %d" % tupc[3])
+        Log2(5,"Cropping settings:")
+        Log2(5,"   bin = %d" % dic["bin"])
+        Log2(5,"   StartX = %d" % tupc[0])
+        Log2(5,"   StartY = %d" % tupc[1])
+        Log2(5,"   NumX = %d" % tupc[2])
+        Log2(5,"   NumY = %d" % tupc[3])
    else:
         vState.CAMERA.BinX = 1  #make sure no rounding for full frame
         vState.CAMERA.BinY = 1
@@ -12807,7 +12969,8 @@ def implExp_LightExposures(dic,vState):
    Log2Summary(1,"Start imaging: " + dic["ID"])
 
    while True:    #------------------------<repeat exposure/sequence loop>-------------
-    #try: (catch if cloudy and want to wait/retry later)
+      #try: (catch if cloudy and want to wait/retry later)
+      Log2(4,"top of repeat loop for exposures")
       i = i + 1
 
       #
@@ -12827,11 +12990,13 @@ def implExp_LightExposures(dic,vState):
       #check for skipAhead condition; also checks time/altitude if this step is limited by that
       if TestEndConditionReached(dic,vState):     #time or altitude condition check (ignored if dLimit == "count")
         #SendToServer(getframeinfo(currentframe()),"End condition reached")
+        Log2(4,"End condition reached")
         break
 
       if MeridianCross(vState):
           #we reached the meridian limit
           #SendToServer(getframeinfo(currentframe()),"Meridian limit reached")
+          Log2(0,"Meridian limit reached")
 
           if not vState.bContinueAfterPierFlip:
               #we are configured to STOP when a meridian flip is needed, do NOT
@@ -12849,6 +13014,7 @@ def implExp_LightExposures(dic,vState):
           bImagerSolve = True
           if dic["camera"].lower() == "guider" or dic["type"].lower() == "focus":
                bImagerSolve = False  #only need wide field solve for these steps
+          Log2(4,"About to call execMeridianFlip")
           if execMeridianFlip(dic["pos"],dic["ID"],vState,bImagerSolve):
               Error("**Unable to find target after meridian flip; stop step")
               return (2,)
@@ -12876,7 +13042,9 @@ def implExp_LightExposures(dic,vState):
       if dCamera == "imager":
           tup = implImagerExposure(i,dic,vState)
           if tup[0] != 0:
+              Log2(4,"Stopping current step")
               return tup      #stop this step and skip ahead to another one
+          #2019.06.11 JU: THIS IS THE PROBLEM LOCATION: IF PIER LIMIT REACHED, IT JUST KEEPS RUNNING HERE
 
       if dCamera == "guider":
           bLast = False  #used to decide if PP solve/sync of image; don't need for last exposure
@@ -12985,9 +13153,9 @@ def implAutoPickFocus(dic,vState):
        #we don't want to try this one again this session, but OK to retry in the
        #future
        Log2(4,"Focus Star Failure:")
-       Log2(4,"   Name:  %s" % fstar.name)
-       Log2(4,"   RA:    %s" % vState.UTIL.HoursToHMS(fstar.dRA,":",":","",1))
-       Log2(4,"   Dec:   %s" % DegreesToDMS(fstar.dDec))
+       Log2(5,"   Name:  %s" % fstar.name)
+       Log2(5,"   RA:    %s" % vState.UTIL.HoursToHMS(fstar.dRA,":",":","",1))
+       Log2(5,"   Dec:   %s" % DegreesToDMS(fstar.dDec))
 
        #2012.04.07 JU: changed to check sun altitude to decide if too late to autofocus
        now = time.gmtime()
@@ -13061,6 +13229,7 @@ def implExp(dic,vState):
     dType = dic["type"].lower()
 
     if dType == "light":                                # <<<--------------------------
+       Log2(4,"implExp calling implExp_LightExposures")
        return implExp_LightExposures(dic,vState)        # <<<---most images taken here!
                                                         # <<<--------------------------
 
@@ -13074,11 +13243,11 @@ def implExp(dic,vState):
        try:
            IgnoreFocusStars.append(dic["ID"])
            Log2(4,"Focus Star Failure:")
-           Log2(4,"   Name:  %s" % dic["ID"])
-           Log2(4,"   RA:    %s" % dic["RA"])
-           Log2(4,"   Dec:   %s" % dic["Dec"])
+           Log2(5,"   Name:  %s" % dic["ID"])
+           Log2(5,"   RA:    %s" % dic["RA"])
+           Log2(5,"   Dec:   %s" % dic["Dec"])
        except:
-           Log2(4,"Focus Star Failure, unable to log; missing dic[] entry?")
+           Log2(5,"Focus Star Failure, unable to log; missing dic[] entry?")
 
        return (0,)  #let the calling routine continue from this
 

@@ -84,6 +84,12 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #2016.12.01 JU: added feature ObservingDateString() so log entries before GMT date changes get same log filename (date) as rest of session
 #2017.01.07 JU: I found that I was using the wrong pixel scale for guider, specified in Set_ImageScale in CommmonConfig.txt file; it was
 #				still using the Atik camera setting of 3.82", not the SBIG ST-402 setting of 4.64"
+#
+#2017.02.02 JU: Change version from Exec4.py to Exec5.py; add Astrometry.net support for plate solve when PP doesn't work.
+#               This is because GOTO's across pier flip lately have been off by a degree, and PP can't solve when that far off.
+#
+#2017.02.25 JU: In park command, add logic to report as mount moves like we do for pier flip; there was a problem
+#               parking the mount the other day; it did not end up in correct position; don't know why.
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -5802,7 +5808,7 @@ def execMeridianFlip(desiredPos,ID,vState,bImagerSolve):
        #have we moved much?
        DiffRA = abs(toRA - fromRA)
        DiffDec = abs(toDec - fromDec)
-       #convert to sqft arcmin, note if large, maybe bump count to delay end?
+       #convert to sqrt arcmin, note if large, maybe bump count to delay end?
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
@@ -6862,16 +6868,57 @@ def execPark(t,vState):
         #sometimes tracking is already off at this point;
         # catch exceptions here if that happens.
         try:
-           prefix = ":"
-           suffix = "#"
-           bRaw   = True
+            prefix = ":"
+            suffix = "#"
+            bRaw   = True
 
-           #vState.MOUNT.CommandBlind(prefix + "hC" + suffix,bRaw)
-           vState.MOUNT.CommandBlind(prefix + "hP" + suffix,bRaw)   #park at HOME position instead of CWD
-           time.sleep(45)   #make sure it finishes
+            #vState.MOUNT.CommandBlind(prefix + "hC" + suffix,bRaw)
+            vState.MOUNT.CommandBlind(prefix + "hP" + suffix,bRaw)   #park at HOME position instead of CWD
+            #time.sleep(45)   #make sure it finishes
+
+            #2017.02.20 JU: The mount did not park correctly the other day after using this command, so add
+            # logging here used during a pier flip, to report on its movement.
+            Log2(2,"Mount has been issued CommandBlind(park at home) command; monitor its movement now.")
+
+            maxExtend = 90  #max we can extend this delay if we see movement
+            count = 10       #initial delay to see if movement
+            fromRA = vState.MOUNT.RightAscension
+            fromDec = vState.MOUNT.Declination
+            while count > 0:
+               count -= 1
+               time.sleep(1)    #wait until movement really stops
+               LogStatusShort(vState)
+               toRA = vState.MOUNT.RightAscension
+               toDec = vState.MOUNT.Declination
+
+               #have we moved much?
+               DiffRA = abs(toRA - fromRA)
+               DiffDec = abs(toDec - fromDec)
+               #convert to sqrt arcmin, note if large, maybe bump count to delay end?
+               DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
+               delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
+                
+               if delta > 2.00:      #(larger value because 'Park' moves relative to sky; threshold to detect still moving (may need to readjust this)               
+                   Log2(2,"Mount still moving: %5.2f arcmin (count=%d, extend=%d) pier=%d/%d" % (delta,count,maxExtend,vState.MOUNT.SideOfPier,SideOfSky(vState)))
+                   if maxExtend > 0:
+                       maxExtend -= 1
+                       count = 10       #reset count if seeing any motion (sometimes we don't but it is still moving)
+                       #Warning: even though the mount is moving, some passes through the loop here
+                       # do not see motion, and decrement the count.  So I reset the count all
+                       # the way to the beginning so that it doesn't time out too soon.
+               else:
+                   Log2(2,"Mount is not moving   (count=%d)" % count)
+
+               fromRA = toRA    #for next check
+               fromDec = toDec
+
+            Log2(2,"Mount should be stationary after PARK command")
+
         except:
            niceLogExceptionInfo()
-           Log2(0,"ERROR: The CommandBlind for PARK threw an exception!!!")
+           Log2(0,"ERROR: The CommandBlind for PARK (or watching movement) threw an exception!!!")
+           Log2(2,"Wait extra time just to make sure any mount movement is finished")
+           time.sleep(45)   #make sure it finishes
 
         Log2(0,"Parked completed (Home)")
         vState.MOUNT.Tracking = False

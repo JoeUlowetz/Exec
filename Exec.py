@@ -1,4 +1,8 @@
-# Exec4.py
+# Exec5.py		Uses Astrometry.net for solving when PP unable to solve
+
+#Setting for config file:   THIS ONLY APPLIES TO WIDE FIELD, ALL NARROW FIELDS STILL USE PP
+#	Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
+
 
 BASE = r"C:\Users\W510\Documents"
 BASE2 = r"C:\Documents and Settings\Joe\My Documents"
@@ -136,6 +140,8 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 
 
 gCamera = "QSI-583"     #Values are: "QSI-583" or "ST-402" (default)
+
+from an_client import Client    #for Astrometry.net
 
 import pythoncom            #added 2013.10.02 JU
 import win32com.client      #needed to load COM objects
@@ -452,6 +458,8 @@ class cState:
 
         self.ImagerScale = 0.48 #default: QSI on C9.25 f/10
         self.GuiderScale = 3.82 #default: Atik on AT66 refractor
+
+        self.AstrometryNet = 0  #Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
 
         self.FlatAltitudeMorning = -3.3
         self.FlatAltitudeEvening = -2   #guess value
@@ -1526,8 +1534,10 @@ def LogStatus( vState ):  #write out frequent status info to special file
             return True
 
    except:
-       Error("Exception trying to read mount current position for threshold check")
-       niceLogExceptionInfo()
+       Log2(1,"Exception trying to read mount current position for threshold")
+       Log2(1,"check. This can usually be ignored; it can be because mount")
+       Log2(1,"has not yet moved, so no status to report yet.")
+       #niceLogExceptionInfo()      #removed message 2017.02.17 JU
 
    try:
        if not vState.CAMERA.GuiderRunning:
@@ -4022,8 +4032,16 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
         # ** Solve Image **
         #********************
         tSolveStart = time.time()
-        #tup = CustomPinpointSolve(camera, currentPos, targetID, filename, 0, vState)
-        tup = CustomPinpointSolve(camera, desiredPos, targetID, filename, 0, vState)
+        #tup = CustomPinpointSolve(camera, desiredPos, targetID, filename, 0, vState)
+        #print "camera=",camera
+        #print "desiredPos=",desiredPos
+        #print "targetID=",targetID
+        #print "filename=",filename
+        
+        tup = AdvancedPlateSolve(camera, desiredPos, targetID, filename, 0, vState)
+        #print "After call to AdvancedPlateSolve"
+        #print "tup=",tup
+        
 
         success = tup[0]
         deltaSolve = tup[3]  #arcmin difference between desired and solved position (value is 0 if not success)
@@ -4232,7 +4250,132 @@ def BrightStarCoordinateFilename(brightStarID,vState):
     return fullname
 
 #--------------------------------------------------------------------------------------------------------
-def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState ):      #return true = success
+def AdvancedPlateSolve( camera, expectedPos, targetID, filename, trace, vState ):
+    #print "Inside AdvancedPlateSolve"
+    #print "camera=",camera
+    #print "expectedPos=",expectedPos
+    #print "targetID=",targetID
+    #print "filename=",filename
+    #print "trace=",trace
+    
+    #This calls the Pinpoint engine software for the specified file.
+    # This is called by PinPointSingle()
+    # This decides whether PinPoint or Astrometry.net is being used
+    # See CustomPinpointSolve() for defn of arguments and return
+
+    #vState.AstrometryNet #0=disable(use PP), 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
+    #Note: Narrow camera always uses PP
+    if vState.AstrometryNet == 0 or camera == 0:
+        return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
+    if vState.AstrometryNet == 2:
+        return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
+    #else == 1 so use PP first
+    if vState.pinpoint_successive_wide_failures < 2:    #(maybe make adjustable)
+        Log2(2,"Using PinPoint for plate solve")
+        return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
+    else:
+        Log2(2,"Using Astrometry.net for plate solve")
+        return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
+
+#--------------------------------------------------------------------------------------------------------
+def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState ):
+    #see documentation of argument list and return values in CustomPinpointSolve()
+
+    start = time.time()
+    if camera == 0:
+        sCamera = "Narrow"	#used with Log2Summary
+    else:
+        sCamera = "*Wide*"	#used with Log2Summary
+
+    try:
+        #There is a chance that this might throw an exception sometimes, such as if
+        #there is a problem with the internet or the remote web site
+        Log2(2,"About to create Astrometry.net Client")
+        client = Client()
+
+        Log2(2,"About to log in")
+        client.login('byntncnnbevtsyis')
+
+        Log2(2,"About to upload file: %s" % filename)
+        client.upload(filename)
+        timeout = vState.ppState[camera].MaxSolveTime
+        Log2(2,"After uploading file, waiting up to %d seconds for completion" % timeout)
+        client.wait_for_completion(timeout)	    #wait, timeout if too long
+
+    except:
+        Log2Summary(1,"AN " + sCamera + " EXCEPTION calling Astrometry.net")
+        Log2(2, "vvvvvvvvvv")
+        Log2(2, "> failed <             (EXCEPTION calling Astrometry.net)" )
+        Log2(2, "^^^^^^^^^^")
+        return (False, 0., 0.,0.)
+
+    status = client.solved_valid
+    end = time.time()
+    Log2(2, "Astrometry.net took: " + str(round(end-start,2)) + " seconds.")
+    if not status:
+        status = client.status_code
+        #   1001 = timeout(1)
+        #   1002 = timeout(2)
+        #   1003 = the wait function called before anything was uploaded
+        #   1004 = Astrometry.net returned result of 'faiure', it could not solve the image (this can happen if image is blank)
+
+        msg = "N/A"
+        if status == 1001:
+            msg = "1001: Timeout(1) occurred"
+            vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
+        if status == 1002:
+            msg = "1002: Timeout(2) occurred"
+            vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
+        if status == 1003:
+            msg = "1003: Wait function called before upload"
+        if status == 1004:
+            msg = "1004: Astrometry.net unable to solve image (maybe blank?)"
+        #add more here in the future
+        Log2(0,"Astronmetry.net Result: FAILED, status = %s" % msg)
+        Log2(2, "vvvvvvvvvv")
+        Log2(2, "> failed <             (using Astrometry.net)" )
+        Log2(2, "^^^^^^^^^^")
+        Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
+
+        del client
+        return (False, 0., 0.,0.)
+
+    Log2(2,"Astrometry.net results returned; successful")
+    try:
+        solvedRA = float(client.solved_RA) / 15      #convert degrees into hours: 360/24 = 15
+        solvedDec = float(client.solved_Dec)
+    except:
+        Log2(0,"ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats")
+        del client
+        return (False, 0., 0.,0.)
+
+    if camera == 1:
+        vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
+
+    if camera == 0:
+        Log2(1,"***narrow****")
+    else:
+        Log2(1,"****WIDE*****")
+    Log2(1,"** SOLVED! **     (%5.2f sec)  Astrometry.net" % (end-start))
+    Log2(1,"*************")
+    Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
+
+    diffRA = solvedRA - expectedPos.dRA_J2000()
+    diffDec = solvedDec - expectedPos.dDec_J2000()
+    DiffRAdeg = diffRA * 15 * cosd(expectedPos.dDec_J2000())   #convert RA diff into degrees, adjusted for declination
+    delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
+
+    Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
+    Log2Summary(1,"AN " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
+
+    #NOTE: I AM NOT WRITING THE SOLVED VALUES INTO THE IMAGES HERE
+
+    del client
+
+    return (True, solvedRA, solvedDec, delta)     #success
+
+#--------------------------------------------------------------------------------------------------------
+def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState ):
     #This calls the Pinpoint engine software for the specified file.
     # This is called by PinPointSingle()
 
@@ -5641,7 +5784,7 @@ def execMeridianFlip(desiredPos,ID,vState,bImagerSolve):
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
-           Log2(2,"Mount still moving: %5.2f arcmin   (count=%d, extend=%d)" % (delta,count,maxExtend))
+           Log2(2,"Mount still moving: %5.2f arcmin   (count=%d, extend=%d) pier=%d" % (delta,count,maxExtend,vState.MOUNT.SideOfPier))
            if maxExtend > 0:
                maxExtend -= 1
                count = 10       #reset count if seeing any motion (sometimes we don't but it is still moving)
@@ -5869,7 +6012,8 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
 
 
     slewTime = time.time() - started
-    Log2(2,"Took %d seconds to complete this slew" % (slewTime))
+    #Log2(2,"Took %d seconds to complete this slew" % (slewTime))
+    Log2(2,"Took %d seconds to complete this slew; pier side now=%d" % (slewTime,vState.MOUNT.SideOfPier))
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
     if HA > 12: HA -= 24
     if HA < -12: HA += 24
@@ -6379,6 +6523,7 @@ def Process( Line, vState ):
         #("SET_SUBFRAME",      setSubFrame),
         #("SET_FULLFRAME",     setFullFrame),
         ("SET_DRIFTTHRESHOLD",    setDriftThreshold),
+		("SET_ASTROMETRY.NET",	setAstrometryNet),		#New feature for Exec4.py
         ("PP",                setPP)
         ]
 
@@ -6679,7 +6824,7 @@ def execPark(t,vState):
     StopGuiding(vState)     #make sure this is off or it will complain
     LogStatusHeaderBrief()
     LogStatus(vState)
-    Log2(0,"*** Park mount")
+    Log2(0,"*** Park mount (this can take a minute to complete)")
     if runMode == 3:
         LogOnly("Validate skipping rest of: execPark")
         return (0,)
@@ -9447,6 +9592,31 @@ def setFocusCompensation(t,vState):
             Error("Invalid command for Set_FocusCompensation")
             Error("Parameter found = <%s>" % str(t))
 
+# Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
+def setAstrometryNet(t,vState):
+    if len(t) == 1:
+        try:
+            value = int(t[0])
+            if value < 0 or value > 2:
+                Error("INVALID ARGUMENT FOR SET_ASTROMETRY.NET; MUST BE 0-2")
+                return
+            vState.AstrometryNet = value
+            if value == 0:
+                Log2(0,"SET Astrometry.net = 0: disable Astrometry.net, use PinPoint for all plate solves")
+            elif value == 1:
+                Log2(0,"SET Astrometry.net = 1: if PinPoint fails to solve after 2 attempts, use Astrometry.net for all remaining attempts on that field")
+            else:   # == 2
+                Log2(0,"SET Astrometry.net = 2: use Astrometry.net for all plate solves; PinPoint will not be used at all")
+            return
+
+        except:
+            pass
+            print 5
+
+    Error("INVALID ARGUMENT FOR SET_ASTROMETRY.NET; must be one number of value: 0, 1, or 2 !!!")
+    Error("len(t) = %d" % len(t))
+
+
 #  Set_ImageScale=<imager arcsec/pixel>,<guider arcsec/pixel>
 def setImageScale(t,vState):
     if len(t) == 2:
@@ -11240,7 +11410,8 @@ def implImagerExposure(index,dic,vState):
         sFilter = dic["filter"]
         iFilter = filterToInt(sFilter)
         #vState.CAMERA.Filter = iFilter     #NOT NEEDED if specified in Expose() function below; save time skipping this.
-        Log2(1,"Set filter wheel to position: %s -- %d " % (sFilter,iFilter))
+        Log2(1,"Set filter wheel to position: %s -- %d, pier side=%d " % (sFilter,iFilter,vState.MOUNT.SideOfPier))
+
 
         Log2(4,"@@@ Filter in use before CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )
         vState.CAMERA.Expose( theExposure, 1, iFilter )   # 1 = light frame
@@ -11426,7 +11597,8 @@ def implGuiderExposure(index,dic,vState,bLast):
     try:
 
         #PP Solve the wide field (guider) image just taken, and reposition mount to keep target centered
-        tup = CustomPinpointSolve(1, dic["pos"], dic["ID"], filename_i, 0, vState)
+        #tup = CustomPinpointSolve(1, dic["pos"], dic["ID"], filename_i, 0, vState)
+        tup = AdvancedPlateSolve(1, dic["pos"], dic["ID"], filename_i, 0, vState)
 #!!!why doesn't this write the WCS coords into the image header??? It should be able to !!!!
 #-> The doc.SaveFile call below overwrites the WCS values that ARE saved in PP call above; remove it.
 ##    spos = Position()

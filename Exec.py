@@ -94,7 +94,10 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #               any more (I've been using FocusMax version 3.7.0.86 for many years). Last night was apparently the first time when
 #               it ever tried to autofocus spanning midnight.  Add feature that if attempting to start autofocus run within
 #               5 minutes of local midnight, just pause until after midnight.
-
+#2017.08.22 JU: an unhandled exception occurred in CustomPinpointSolve, involving formatting a string for display; I enclosed all the calls
+#               to CustomPinpointSolve in exception block to catch and handle as a failed solve; otherwise program can exit without safety park
+#               (this code hasn't changed for years, so this must be a very rare occurrence)
+#2017.08.30 JU: removed calls to RetryInitialMovementUntilClear and replaced with raise WeatherError
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -156,6 +159,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #    ********************************************************
 #    ** Failed to reacquire target after Bad Guiding event **
 #    ********************************************************
+#2017.07.24 JU: changed so that it goes into Weather exception to retry current step (at least I hope that is what it will do)
 
 
 gCamera = "QSI-583"     #Values are: "QSI-583" or "ST-402" (default)
@@ -479,6 +483,7 @@ class cState:
         self.ImagerScale = 0.48 #default: QSI on C9.25 f/10
         self.GuiderScale = 3.82 #default: Atik on AT66 refractor
 
+        #This can be set from command file: Set_Astrometry.net=1
         self.AstrometryNet = 0  #Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
 
         self.FlatAltitudeMorning = -3.3
@@ -1061,7 +1066,6 @@ def LogPerm(value,filex):   #does NOT have daily log files; all entries to one m
     except:
        #print "UNABLE TO WRITE TO LOG FILE:",filex[:-4] + sDateStr, value
        niceLogExceptionInfo()
-       #nicePrintExceptionInfo()
        print "LogBase: UNABLE TO WRITE TO LOG FILE:"
        print "Filename:",filex
        print "Log line:", value
@@ -1243,9 +1247,8 @@ def LogHeader():    #write header into log file:
     LogBase('pMax    = the max pixel intensity',PINPOINT_SOLVE)
     LogBase('pMin    = the min pixel intensity',PINPOINT_SOLVE)
     LogBase(" ", PINPOINT_SOLVE)
-    #LogBase('-Time- #Imag  #Cat Match Order Resdl "/Pixel -FWHM pMode  pMax  pMin PosAngle ---RA---  --Dec--- Camera Target',PINPOINT_SOLVE)
     LogBase('                                                                               Solved-J2000                             Desired-J2000         Difference',PINPOINT_SOLVE)
-    LogBase('-Time- #Imag  #Cat Match Order Resdl "/Pixel -FWHM pMode  pMax  pMin PosAngle ---RA---  --Dec--- Camera Target         ---RA---  --Dec---  ---RA----  --Dec---',PINPOINT_SOLVE)
+    LogBase('-Time- #Imag  #Cat Match Order Resdl "/Pixel -FWHM pMode  pMax  pMin PosAngle ---RA---    --Dec--- Camera Target         ---RA---  --Dec---   ---RA----    --Dec---',PINPOINT_SOLVE)
 
     LogBase(" ", FOCUSER_LOG)
     LogBase("-----------------------------------------------",FOCUSER_LOG)
@@ -1772,8 +1775,11 @@ def RecoverFromBadGuiding(dic,vState):    #reacquire target
        #any explicit target list is always followed by Survey step so it won't
        #run out of targets. If it consistently fails to find a target, the
        #weather alarm will activate.
-       return True #problem
-   #EnableTestForMeridianLimit(vState)   #check whether we need to watch for pier flip later during the exposure (probably not since we just flipped)
+       #return True #problem
+       #CHANGED 2017.07.24 JU: instead of stopping current target, pause and
+       #throw weather exception so it pauses and then retries later on this target
+       raise WeatherError
+
 
    if StartGuidingConfirmed(dic["ID"], vState, 5):
       Error("**Failed to start guiding even after several attempts (during RecoverFromBadGuiding)")
@@ -4052,16 +4058,8 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
         # ** Solve Image **
         #********************
         tSolveStart = time.time()
-        #tup = CustomPinpointSolve(camera, desiredPos, targetID, filename, 0, vState)
-        #print "camera=",camera
-        #print "desiredPos=",desiredPos
-        #print "targetID=",targetID
-        #print "filename=",filename
 
         tup = AdvancedPlateSolve(camera, desiredPos, targetID, filename, 0, vState)
-        #print "After call to AdvancedPlateSolve"
-        #print "tup=",tup
-
 
         success = tup[0]
         deltaSolve = tup[3]  #arcmin difference between desired and solved position (value is 0 if not success)
@@ -4278,31 +4276,120 @@ def BrightStarCoordinateFilename(brightStarID,vState):
 
 #--------------------------------------------------------------------------------------------------------
 def AdvancedPlateSolve( camera, expectedPos, targetID, filename, trace, vState ):
-    #print "Inside AdvancedPlateSolve"
-    #print "camera=",camera
-    #print "expectedPos=",expectedPos
-    #print "targetID=",targetID
-    #print "filename=",filename
-    #print "trace=",trace
-
     #This calls the Pinpoint engine software for the specified file.
     # This is called by PinPointSingle()
     # This decides whether PinPoint or Astrometry.net is being used
     # See CustomPinpointSolve() for defn of arguments and return
 
-    #vState.AstrometryNet #0=disable(use PP), 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
-    #Note: Narrow camera always uses PP
-    if vState.AstrometryNet == 0 or camera == 0:
-        return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
-    if vState.AstrometryNet == 2:
-        return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
-    #else == 1 so use PP first
-    if vState.pinpoint_successive_wide_failures < 2:    #(maybe make adjustable)
-        Log2(2,"Using PinPoint for plate solve")
-        return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
+    #2017.08.22 JU: enclose this in exception block because one time something went wrong in CustomPinpointSolve and it
+    #   tried to log something that didn't format correctly as a string, throwing an unhandled exception (no safety park!)
+    try:
+        #vState.AstrometryNet #0=disable(use PP), 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
+        #Note: Narrow camera always uses PP
+        if vState.AstrometryNet == 0 or camera == 0:
+            return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
+        if vState.AstrometryNet == 2:
+            return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
+        #else == 1 so use PP first
+        if vState.pinpoint_successive_wide_failures < 2:    #(maybe make adjustable)
+            Log2(2,"Using PinPoint for plate solve")
+            return CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState )
+        else:
+            Log2(2,"Using Astrometry.net for plate solve")
+            return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
+
+    except:
+        #catch all unhandled exceptions, treat as solve failure
+        niceLogExceptionInfo()
+        Error("Caught unhandled exception in AdvancedPlateSolve; treat as failed solve")
+        return (False, 0., 0., 0.)
+
+
+#--------------------------------------------------------------------------------------------------------
+def CountImageStars( camera, expectedPos, targetID, filename, trace, vState ):
+    #Use PinPoint to count number of stars in image before trying Astrometry.net; if there are no
+    #or few stars in the image, probably bad weather, and don't want to try to solve it.
+
+    #return number of field stars found; return 0 if problem performing the count
+
+    pp = win32com.client.Dispatch("PinPoint.Plate")
+
+    try:
+       pp.AttachFITS(filename)
+    except:
+       #this means the file could not be opened
+       Error("   Pinpoint routine could not open file: " + filename)
+       Error("   The image is probably very bad")
+       Log2Summary(1,"PP " + sCamera + " failed; could not open file, probably very bad (called as part of Astrometry.net)")
+       try:
+         del pp
+       except:
+         pass
+       return 0
+
+    #if the supplied RA/Dec arguments are both 0, then assume the image already has FITS header settings for these
+    if not expectedPos.isValid:
+       #assume the fits header already has the expected coordinates
+       pp.RightAscension = UTIL.HMSToHours(pp.ReadFITSValue("OBJCTRA"))
+       pp.Declination    = UTIL.DMSToDegrees(pp.ReadFITSValue("OBJCTDEC"))
     else:
-        Log2(2,"Using Astrometry.net for plate solve")
-        return CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState )
+       pp.RightAscension,pp.Declination  = expectedPos.getJ2000Decimal() # PrecessLocalToJ2000(expectedRA,expectedDec)
+
+
+    #Sometimes (rarely? randomly?) PP uses these other variables when solving!
+    pp.TargetRightAscension = pp.RightAscension
+    pp.TargetDeclination = pp.Declination
+
+    Log2(4,"RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
+    Log2(4,"Dec = %s" % DegreesToDMS(pp.Declination))
+    pp.TracePath = r"C:\temp"
+    pp.TraceLevel = 1
+
+    if camera == 0:
+        #Imager, narrow field and deep (we hope)
+        pp.ArcsecPerPixelHoriz     = vState.ImagerScale * vState.ppState[camera].binning #scale for binning
+        pp.ArcsecPerPixelVert      = vState.ImagerScale * vState.ppState[camera].binning #scale for binning
+        pp.Catalog                 = vState.ppState[camera].CatalogID # 5  #3=GSC, 5=USNO_A2.0(6GB), 8=USNO_B2.0 via Internet
+        #pp.CatalogPath = r"C:\Catalog"
+        pp.CatalogMaximumMagnitude = vState.ppState[camera].CatMaxMag # 18         #default=20 (data limit probably 19)
+        pp.MaxSolveTime            = vState.ppState[camera].MaxSolveTime # 90   #usually solves in less than 10 seconds; I've seen it go at least 45 seconds and still solve
+        pp.SigmaAboveMean          = vState.ppState[camera].SigmaAboveMean # 2.0 #default 3.0; may want to use 2.5 or 2.0 for PP narrow??
+        #using PP 2.0 may need image to be calibrated first to avoid false positives!
+
+        #maybe make this value configurable?
+        pp.CatalogExpansion = 0.3  #default 0.3; legal values 0.0 - 0.8
+
+        expectedScale = vState.ImagerScale  * vState.ppState[camera].binning #scale for binning
+    else:
+        #Guider, wide field, not deep
+        pp.ArcsecPerPixelHoriz     = vState.GuiderScale
+        pp.ArcsecPerPixelVert      = vState.GuiderScale
+        pp.Catalog                 = vState.ppState[camera].CatalogID  # 3  #3=GSC, 5=USNO_A2.0(6GB), 8=USNO_B2.0 via Internet
+        #pp.CatalogPath = r"C:\gsc11"
+        pp.CatalogMaximumMagnitude = vState.ppState[camera].CatMaxMag # 16
+        pp.MaxSolveTime            = vState.ppState[camera].MaxSolveTime # 60   #this should solve quick; if it doesn't, something is wrong
+        pp.SigmaAboveMean          = vState.ppState[camera].SigmaAboveMean # 2.0 #default 3.0; may want to use 2.5 or 2.0 for PP narrow??
+
+        #maybe make this value configurable?
+        pp.CatalogExpansion = 0.3  #default 0.3; legal values 0.0 - 0.8
+
+        expectedScale = vState.GuiderScale  #(no binning supported here)
+
+
+    #Not sure if I even need catalog settings here
+    pp.CatalogPath = r"C:\Catalog"
+
+    #maybe (or maybe not):
+    pp.ConvolveGaussian(1)      #arg is FWHM(arcsec) of Gaussian fn to use.
+    pp.ImageModified = False    #to prevent modified image from being written out
+
+    pp.FindImageStars()
+
+    numImageStars = len(pp.ImageStars)
+    #Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
+    del pp
+
+    return numImageStars
 
 #--------------------------------------------------------------------------------------------------------
 def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState ):
@@ -4313,6 +4400,19 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         sCamera = "Narrow"	#used with Log2Summary
     else:
         sCamera = "*Wide*"	#used with Log2Summary
+
+    #2017.07.03: before calling Astrometry.net, first use PinPoint to COUNT the number of stars
+    # present in the image. If the number is too low, don't bother trying Astrometry.net (probably bad weather)
+    numImageStars = CountImageStars( camera, expectedPos, targetID, filename, trace, vState )
+
+    Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
+    if numImageStars < 10:  #ADJUST THIS
+        Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
+        Log2(2, "vvvvvvvvvv")
+        Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
+        Log2(2, "^^^^^^^^^^")
+        return (False, 0., 0.,0.)
+    #end of Pinpoint addition feature
 
     try:
         #There is a chance that this might throw an exception sometimes, such as if
@@ -4373,8 +4473,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
 
         del client
         return (False, 0., 0.,0.)
-        
-    #It appears to have worked 
+
+    #It appears to have worked
     Log2(2,"Astrometry.net results returned; successful")
     try:
         solvedRA = float(client.solved_RA) / 15      #convert degrees into hours: 360/24 = 15
@@ -4402,7 +4502,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
 
     Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
-    
+
     if delta > 90:
         #There is no way this is a valid result ( >90 arcminutes); it is too far away
         msg = "1006: Astrometry.net returned unreasonable result, TOO FAR AWAY FROM EXPECTED LOCATION (too few stars?)"
@@ -4414,7 +4514,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
 
         del client
         return (False, 0., 0.,0.)
-        
+
 
     Log2Summary(1,"AN " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
 
@@ -4652,7 +4752,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
                 # clouded up, and if that happens it might even start raining.
                 # Therefore, stop the script and raise the alarm so I can close
                 # up and protect the equipment.
-                Log2Summary(1,"PP " + sCamera + " did not solve, and exceeded bad weather threshold")
+                Log2Summary(1,"PP " + sCamera + " did not solve, and exceeded bad weather threshold; # stars = %d" % numImageStars)
 
                 Log2(0,"%d successive Wide field Pinpoint failures; suspect bad weather; HALTING PROGRAM..." % (vState.pinpoint_successive_wide_failures))
                 print "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
@@ -4675,7 +4775,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
             return (True, estJ2000RA, estJ2000Dec,0.)     #success
 
         Log2(1,"Result: failed to solve  (%5.2f sec)" % (end-start))
-        Log2Summary(1,"PP " + sCamera + " failed")
+        Log2Summary(1,"PP " + sCamera + " failed; # stars = %d" % numImageStars)
 
         try:
             Log2(2, "vvvvvvvvvv")
@@ -4709,8 +4809,8 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     ## NOW: verify scale
     diff = abs( abs(pp.ArcsecPerPixelHoriz) - expectedScale )
     if (diff/expectedScale)*100 > SCALE_THRESHOLD_PCT:
-        Log2(1,"Result: bad scale  (%5.2s sec)" % (end-start))
-        Log2Summary(1,"PP " + sCamera + " failed; bad scale")
+        Log2(1,"Result: bad scale  (%5.2f sec)" % (end-start))
+        Log2Summary(1,"PP " + sCamera + " failed; bad scale; # stars = %d" % numImageStars)
 
         #Note: do not count this as a Wide failure for bad weather detection
 
@@ -4730,7 +4830,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
             Log2(1,"***narrow****")
             Log2(1,"*> IGNORED <*     (%5.2f sec)  Stars: Image = %d, Catalog = %d" % (end-start,len(pp.ImageStars),len(pp.CatalogStars)))
             Log2(1,"*************")
-            Log2Summary(1,"PP " + sCamera + " assumed worked, but busy field and scale problem")
+            Log2Summary(1,"PP " + sCamera + " assumed worked, but busy field and scale problem; # stars = " % numImageStars)
 
             solvedRA = expectedPos.dRA_J2000()
             solvedDec = expectedPos.dDec_J2000()
@@ -4767,7 +4867,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 #               values instead, I could avoid this
 
         Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
-        Log2Summary(1,"PP " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
+        Log2Summary(1,"PP " + sCamera + " SUCCESS, Diff: %6.2f arcmin; # stars = %d" % (delta,numImageStars))
 
 
     solvedRA = pp.RightAscension
@@ -4787,7 +4887,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     catRAstring, catDecstring = expectedPos.getJ2000String()
     diffRA = pp.RightAscension - expectedPos.dRA_J2000()
     diffDec = pp.Declination - expectedPos.dDec_J2000()
-    report_line = "%6.2f %5d %5d %5d   %d   %5.3f  %5.3f  %5.3f %5d %5d %5d %7.2f  %8s %9s %6s %-14s%9s %9s  %9s %9s" % (
+    report_line = "%6.2f %5d %5d %5d   %d   %5.3f  %5.3f  %5.3f %5d %5d %5d %7.2f  %8s %9s %6s %-14s%9s %9s  %10s %9s" % (
             end-start,
             len(pp.ImageStars),
             len(pp.CatalogStars),
@@ -12418,52 +12518,8 @@ def implExp_LightExposures(dic,vState):
 
 #--------------------------------------------------------------------------------------------------------
 def RetryInitialMovementUntilClear(dic,vState):
-#return 0=success(OK to image), 1=failure, or not allowed to retry
-#
-#Come here right after failure of call to implExp_InitialMovement from implExp()
-  if not vState.WaitIfCloudy:
-    return 1  #not allowed to wait
-
-  Log2(0,"Apparently cloudy; wait half an hour and see if it clears up")
-  while( True ):
-    tup = implExp_StartCondition(dic,vState)
-    if tup[0] != 0:
-        return 1	#too late to retry
-
-    SafetyPark(vState)
-
-    #what time is it now (nearest minute)?
-    currentTup = time.gmtime(time.time())
-    utcMin =  (currentTup[3] * 60) + (currentTup[4])
-
-    #what time will it be in 30 minutes?	#this does NOT work spanning 0h UT!
-    utcMin = utcMin + 30
-    bWrapped = False
-    if utcMin > (24*60):
-        Error("RetryInitialMovementUntilClear span 0h")
-        utcMin -= (24*60)
-
-    #wait until that time
-    while True:
-       currentTup = time.gmtime(time.time())
-       nowMin = (currentTup[3] * 60) + (currentTup[4])
-       if bWrapped and nowMin > (22*60):
-          #wrapped around 0h
-           Log2(1,"Cloud; waiting for 0h; current time %02d:%02d:%02d" % (currentTup[3],currentTup[4],currentTup[5]))
-           time.sleep(120)
-           continue
-       if nowMin >= utcMin:
-          break
-
-       Log2(1,"Cloud waiting; current time %02d:%02d:%02d" % (currentTup[3],currentTup[4],currentTup[5]))
-       time.sleep(120)
-
-    Log2(0,"Retry Initial Movement, see if can see stars again, or if still cloudy")
-    tup = implExp_InitialMovement(dic,vState)
-    if tup[0] == 0:
-        return 0    #success
-    Log2(0,"Apparently still cloudy; wait another half hour before trying again")
-    #else continue looping
+    raise WeatherError
+    #THIS CODE WAS OBSOLETE; USE WeatherError EXCEPTION INSTEAD
 
 #--------------------------------------------------------------------------------------------------------
 def implAutoPickFocus(dic,vState):
@@ -12536,10 +12592,12 @@ def implAutoPickFocus(dic,vState):
           return tup
        tup = implExp_InitialMovement(dic3,vState)
        if tup[0] != 0:
-            if RetryInitialMovementUntilClear(dic3,vState):
-                return tup  #unable to retry, or too late
+            #2017.08.30 JU: changed to raise weather exception; used to call RetryInitialMovementUntilClear (obsolete)
+            raise WeatherError
+            ###if RetryInitialMovementUntilClear(dic3,vState):
+            ###    return tup  #unable to retry, or too late
             #else retry eventually succeeded
-            Log2(0,"Eventual success for Initial Movement(in autofocus), continue")
+            ###Log2(0,"Eventual success for Initial Movement(in autofocus), continue")
 
        dic3["exp"] = 0.1
        if callFocusMax(dic3,vState):
@@ -12613,10 +12671,13 @@ def implExp(dic,vState):
     #
     tup = implExp_InitialMovement(dic,vState)
     if tup[0] != 0:
-        if RetryInitialMovementUntilClear(dic,vState):		#2016.01.02 JU: WARNING: this waits but does not take dark frames while waiting; it is apparently an old design for dealing w/ clouds; THIS SHOULD BE MERGED INTO NEW DESIGN FOR BAD WEATHER
-            return tup  #unable to retry, or too late
+        #2017.08.30 JU: changed to raise weather exception; used to call RetryInitialMovementUntilClear (obsolete)
+        raise WeatherError
+
+        ###if RetryInitialMovementUntilClear(dic,vState):		#2016.01.02 JU: WARNING: this waits but does not take dark frames while waiting; it is apparently an old design for dealing w/ clouds; THIS SHOULD BE MERGED INTO NEW DESIGN FOR BAD WEATHER
+        ###    return tup  #unable to retry, or too late
         #else retry eventually succeeded
-        Log2(0,"Eventual success for Initial Movement, continue")
+        ###Log2(0,"Eventual success for Initial Movement, continue")
 
     #
     # Handle all different types of steps...
@@ -12855,8 +12916,8 @@ print "Remember: run eserver.py first if want to receive realtime updates of pro
 SendToServer(getframeinfo(currentframe()),"========= Startup ===========")
 
 #Make sure the log file has a break showing a new start
-LogHeader()
 ObservingDateSet()
+LogHeader()
 print "Observing date =", ObservingDateString()
 
 try:

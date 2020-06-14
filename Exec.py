@@ -1,4 +1,4 @@
-# Exec7D.py		Uses ephem for coord translation; Uses Astrometry.net for solving when PP unable to solve
+# Exec8D.py		Uses ephem for coord translation; Uses Astrometry.net for solving when PP unable to solve
 
 #Remove calls for:
 #   PrecessLocalToJ2000(dJNowRA, dJNowDec)
@@ -157,6 +157,11 @@ Master_Database = "C:/fits_script/Master_db.db"
 #2018.04.28 JU: Added focuser temperature and position setting to Summary log when reporting exposure
 #2018.09.02 JU: Adding SQLite3 features; see designs on laptop W510 in C:\Users\W510\Documents\SQLite
 #2018.12.31 JU: Exec6D: added display of SideOfSky to Log2Summary for PP solve and exposure
+#2019.08.07 JU: Exec8D: fix testing during exposures to see if pier flip needed; it wasn't stopping when this happened
+#2019.10.19 JU: added CoolerOn command, and added to current script; I apparently forgot to turn cooler on, or I turned it off???
+#2019.10.24 JU: Why do I call SettleGuiding() [lines ~12168, ~12245] before each exposure? This takes extra time from time series. Make optional???
+#               (This was introduced in 2017 in version Exec5.py) Note: for individual exposures, settle only happens if exposures > 150 sec.
+
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -729,6 +734,7 @@ class cState:
            #make sure the cooler is on, just in case
            try:
                if not self.CAMERA.CoolerOn:
+                   print ">>>COOLER WAS NOT ON WHEN SCRIPT STARTED, TURNING IT ON NOW<<<"
                    self.CAMERA.CoolerOn = True
            except:
                pass
@@ -810,7 +816,7 @@ class cState:
                 self.MOUNT.CommandBlind(">181:",False)  #Alarm off
 
                 self.MOUNT.CommandBlind(">131:",False)  #Tracking rate = SIDEREAL  (hope it is OK to do this)
-                
+
                 #Other commands that may be useful:
                 #   :hP#    move to Home position
                 #   result = MOUNT.CommandString(":Gv#",False)  #get velocity; return N for no tracking
@@ -822,11 +828,18 @@ class cState:
                 #   :hN#    Sleep telescope; stop tracking, blank displays
                 #   :hW#    Wake up telescope; restart tracking
                 #   result = MOUNT.CommandString("<99:",False)  #99 = Status Inquiry; return value gives several status flags
+                #       1 = telescope aligned
+                #       2 = modeling in use
+                #       4 = object is selected
+                #       8 = GOTO operation is performed
+                #       16 = RA limit reached   [[PIER LIMIT?! ]]
+                #       32 = Precess coords from J2000 to JNow (I don't ever want that to happen; turn off with :p0# )
                 #   result = MOUNT.CommandString("<130:",False)  #130 = Get current tracking rate; 135=terrestial mode (ie. none), 131=sidereal
-                #   result = MOUNT.CommandString("<201:",False)  #polar axis misalignment in azimuth; seconds of arc
-                #   result = MOUNT.CommandString("<202:",False)  #polar axis misalignment in elevation; seconds of arc
-                
-                
+                misAzimuth = self.MOUNT.CommandString("<201:",False)  #polar axis misalignment in azimuth; seconds of arc
+                misElevation = self.MOUNT.CommandString("<202:",False)  #polar axis misalignment in elevation; seconds of arc
+                print "Mount polar alignment based on current model: Azimuth: %s arcsec, Elevation: %s arcsec" % (misAzimuth,misElevation)
+
+
             except:
                 print "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 print "--> Cannot connect to Gemini/POTH"
@@ -1342,7 +1355,7 @@ def LogOnly(value):     #does NOT write to screen by itself
     #iDateTime = time.gmtime()    #Change: include date as part of logfile name
     #sDateStr = time.strftime('_%Y%m%d.txt',iDateTime)
     #return LogBase(value,logFile[:-4] + sDateStr)
-    Log2(LOGLEVEL2SCREEN + 1,value)
+    Log2(LOGLEVEL2SCREEN + 2,value)
 
 #--------------------------------
 def Error(value):   #same as Log() but always prints as well as logs
@@ -1421,8 +1434,17 @@ def LogHeader():    #write header into log file:
 
 #--------------------------------
 def LogStatusHeaderBrief():
-   StatusLog("                 Mount-JNow             Pier RevX Cam                  Aggr                  -Focuser-  -Guide_Image------------ ----Detect_guider_problems----")
-   StatusLog("           ---RA----- ---Dec--- Alt- -Az-- P R   Temp Pwr  Xerr  Yerr  X  Y  FWHM Sidereal   Posn Temp    min   max   avg    std [excessive error ck]   [Stale ck]")
+    StatusLog("Mount status string:  AMOGLP")
+    StatusLog(" A(aligned)    = telescope aligned")
+    StatusLog(" M(modeling)   = modeling in use")
+    StatusLog(" O(object)     = object is selected")
+    StatusLog(" G(Goto)       = GOTO operation is performed")
+    StatusLog(" L(limit)      = RA limit reached   [[PIER LIMIT?! ]]")
+    StatusLog(" P(precession) = Precess coords from J2000 to JNow")  # (I don't ever want that to happen; turn off with :p0# )
+    StatusLog("Last fields:   Velocity, home, outStatus, tracking, handctrl, guidspeed, RA-move")
+    StatusLog("GuideFlag: o=old values, E=exception running, e=exception reading")
+    StatusLog("                 Mount-JNow             Pier RevX Cam                  Aggr                  -Focuser-  -Guide_Image------------ ----Detect_guider_problems----")
+    StatusLog("           ---RA----- ---Dec--- Alt- -Az-- P R   Temp Pwr  Xerr  Yerr  X  Y  FWHM Sidereal   Posn Temp    min   max   avg    std [excessive error ck]   [Stale ck]")
 
 def LogStatusHeader():      ###THIS IS NOT USED
    gmt = time.gmtime(time.time())
@@ -1645,6 +1667,7 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
    global gGuidingCount
    global gGuidingXMax
    global gGuidingYMax
+
 
    #Where are we, and are we still close to the location we want?
    #TODO: IF WE ARE TAKING DARKS/BIAS/FLATS AND WE ARE PARKED WE DO NOT WANT TO DO THIS!!!
@@ -1929,6 +1952,26 @@ def RecoverFromBadGuiding(dic,vState):    #reacquire target
    Log2(0,"*********************************************************")
    Log2Summary(1,"Attempt to reacquire target after Bad Guiding event")
 
+   #2019.08.05 JU: are we at the pier limit????
+   mountStatus = vState.MOUNT.CommandString("<99:",False)  #99 = Status Inquiry; return value gives several status flags
+   #       1 = telescope aligned
+   #       2 = modeling in use
+   #       4 = object is selected
+   #       8 = GOTO operation is performed
+   #       16 = RA limit reached   [[PIER LIMIT?! ]]
+   #       32 = Precess coords from J2000 to JNow (I don't ever want that to happen; turn off with :p0# )
+   limit = int(mountStatus) & 16     #this will be non-zero if this bit is set
+   if limit > 0:
+        #WE ARE AT PIER LIMIT!!!
+        Log2(1,"  ")
+        Log2(1,"********************************************")
+        Log2(1,"** WE ARE AT PIER LIMIT; DO MERIDIAN FLIP **")
+        Log2(1,"********************************************")
+        Log2(1,"  ")
+        EnhancedMeridianFlip(vState)
+        Log2(1,"Continue with recovering from bad guiding")
+
+
    #NOTE: if our current command is 'Stationary', this does not have
    # a "pos" value, so this throws an exception! (Maybe a good idea?)
 
@@ -2090,6 +2133,32 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
       xAggr = vState.CAMERA.GuiderAggressivenessX
       yAggr = vState.CAMERA.GuiderAggressivenessY
       fSidereal = vState.MOUNT.SiderealTime
+
+      #2019.08.05 JU: add feature to dump info from Gemini
+      velocity = vState.MOUNT.CommandString(":Gv#",False)   #get velocity; return N for no tracking
+      home     = vState.MOUNT.CommandString(":h?",False)    #Get home status: 2=move in progress to home, 1=move to home done; 0=no move home cmd received
+      status   = vState.MOUNT.CommandString("<99:",False)   #99 = Status Inquiry; return value gives several status flags
+      tracking = vState.MOUNT.CommandString("<130:",False)  #130 = Get current tracking rate; 135=terrestial mode (ie. none), 131=sidereal
+      handctrl = vState.MOUNT.CommandString("<160:",False)  #160 = Get hand ctrl mode; 161=visual(guiding won't work!), 162=Photo, 163=All speeds
+      gdspeed  = vState.MOUNT.CommandString("<150:",False)  #150 = Guiding speed; 0.2 - 0.8
+      RAMove   = vState.MOUNT.CommandString("<190:",False)  #190 = RA motor movement: 191=stopped, 192=moving
+
+      #status string:  AMOGLP
+      # A(aligned)    = 1 = telescope aligned
+      # M(modeling)   = 2 = modeling in use
+      # O(object)     = 4 = object is selected
+      # G(Goto)       = 8 = GOTO operation is performed
+      # L(limit)      = 16 = RA limit reached   [[PIER LIMIT?! ]]
+      # P(precession) = 32 = Precess coords from J2000 to JNow (I don't ever want that to happen; turn off with :p0# )
+      A = M = O = G = L = P = '.'
+      if (int(status) & 1) > 0:      A = 'A'
+      if (int(status) & 2) > 0:      M = 'M'
+      if (int(status) & 4) > 0:      O = 'O'
+      if (int(status) & 8) > 0:      G = 'G'
+      if (int(status) & 16) > 0:     L = 'L'
+      if (int(status) & 32) > 0:     P = 'P'
+      outStatus = A + M + O + G + L + P
+
    except:
       dRA = 0.
       dDec = 0.
@@ -2100,13 +2169,18 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
       xAggr = 0
       yAggr = 0
       fSidereal = 0.
+      velocity = '?'
+      home     = '?'
+      outStatus   = '??????'
+      tracking = '999'
+      gdspeed = '???'
 
    try:
         msgGuider = vState.CAMERA.LastGuiderError
    except:
         msgGuider = "---"
 
-   value = "| %10s %9s %4s %5s %d %d %6s %3d %5s %5s%1s%2d %2d %5s %10s %4d %3s %5d %5d %5d %6.1f %4s (%2s)   %4s (%2s)  %4s (%2s) [%s|%s]" % (
+   value = "| %10s %9s %4s %5s %d %d %6s %3d %5s %5s%1s%2d %2d %5s %10s %4d %3s %5d %5d %5d %6.1f %4s (%2s)   %4s (%2s)  %4s (%2s) [%s|%s] |G: %s, %s, %s, %s, %s, %s" % (
       UTIL.HoursToHMS(dRA,":",":","",1),                      #string
       DegreesToDMS(dDec),                        #string
       str(round(fAlt,1)),                        #string
@@ -2128,7 +2202,8 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
       tupGuide[0],                              #number (max guider pixel)
       tupGuide[2],                              #number (avg guider pixel)
       tupGuide[3],                              #float (std guider pixel)
-      savgX,slenAvgX,savgY,slenAvgY,savgS,slenAvgS,msgX,msgY
+      savgX,slenAvgX,savgY,slenAvgY,savgS,slenAvgS,msgX,msgY,
+      velocity,home,outStatus,tracking,handctrl,gdspeed
       )
 
    StatusLog(prefix + value)    #THIS IS THE IMPORTANT USE OF THIS LOG FILE
@@ -3269,14 +3344,33 @@ def StopGuiding(vState):
     Log2(2,"StopGuiding: starting shutdown")
 
     # I wrote a VB script that calls the StopGuider() cmd; this seems to work!
-    ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
+    ###ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
+    ret = vState.CAMERA.GuiderStop
+    #Returns true if successful. This is calling a method without parameters, so no parens after it!
+    
+
+    #REWRITE THE ABOVE TO CAPTURE STANDARD OUTPUT!!!!!!!!!!!!!!!!
 
     imaging_db.RecordGuider(vState,False,1050)
 
-    if ret != 0:
-        Error("Call to shut down guider failed")
+    if not ret:
+        Error("Call to shut down guider failed; ret = %d" % ret)
         Error("*** EXPECT PROBLEMS TO OCCUR NOW ***")
         vState.guide_shutdown_failure_count += 1
+
+        time.sleep(5)
+        for i in range(5):
+            Error("Try additional guider shutdown attempt")
+            ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
+            if ret:
+                Error("GOOD! Attempt %d worked to shut down guider" % i+1)
+                break
+            Error("Call to shut down guider failed; ret = %d" % ret)
+            time.sleep(5)
+        if ret != 0:
+            Error("************************************")
+            Error("*** EXPECT PROBLEMS TO OCCUR NOW ***")
+            Error("************************************")
     else:
         Log2(2,"StopGuiding: shutdown completed")
         #what if the shutdown isn't really finished yet? add extra delay
@@ -4135,6 +4229,8 @@ def TakeWideExposure(exposure,vState):  #used by Pinpoint solve routine
     doc = GetGuiderDoc(vState)
     return doc
   except:
+        Log2(0,"Exception thrown in TakeWideExposure")
+        niceLogExceptionInfo()
         SafetyPark(vState)
         raise SoundAlarmError,'Halting program'
 
@@ -4933,7 +5029,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
         msg = "Exception for MultiPPSolve"
         DumpPP(pp)
 
-    Log2(0,msg)
+    Log2(4,msg)
 
     if bSolve:
        Log2(0, MultiPPSolve.DisplaySolveCountStr() )
@@ -5985,8 +6081,8 @@ def TestForMeridianLimit(threshold,verbose,vState):
             return True    #we have crossed the meridian!!
         #else:
         #    Log2(5,"Do not need pier flip: threshold=" + str(threshold) + " is smaller than HA=" + str(HA))
-    else:
-        Log2(4,"SideOfSky = 0, looking west; do not test")
+    #else:
+    #    Log2(4,"SideOfSky = 0, looking west; do not test")  #THIS LOGS TOO OFTEN; DON'T NEED IT
     if threshold == 0:
         #only log this if called from "MeridianCross"
         #Log2(2,"MeridianCross: no violation")
@@ -6027,10 +6123,11 @@ def EnhancedMeridianFlip(vState):       #!! Gemini specific code !!
         # left
         Log2(2,"Current location(JNow) RA %s  Dec %s  Side=%d" % (vState.UTIL.HoursToHMS(vState.MOUNT.RightAscension,":",":","",1),DegreesToDMS(vState.MOUNT.Declination),vState.MOUNT.SideOfPier))
         Log2(2,"Slew east: start")
-        vState.MOUNT.CommandBlind(":Me#",True)
+        vState.MOUNT.CommandBlind(":RS#",False) #set movement speed to Slew  (added 2019.08.05 JU)
+        vState.MOUNT.CommandBlind(":Me#",False)  #changed to False
         time.sleep(2)
         Log2(2,"... stop")
-        vState.MOUNT.CommandBlind(":Q#",True)
+        vState.MOUNT.CommandBlind(":Q#",False)   #changed to False
         #Note: I do NOT think that I could have used AbortSlew() here; those slew commands
         #seem to depend on the current state of tracking, and when the mount is 'stuck'
         #on the meridian, tracking is off.
@@ -6394,6 +6491,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(4,"About to issue SlewToCoordinatesAsync")
     try:
         imaging_db.RecordMount(vState,1062)
+        vState.MOUNT.CommandBlind(":p0#",False)    #no precession, no refraction (make sure this doesn't get turned on, or it thinks my coords below are J2000!)
         vState.MOUNT.SlewToCoordinatesAsync(dRA_JNow_destination, dDec_JNow_destination)       # Movement occurs here <----------------
     except:
         Error("Unable to slew to specified coordinates; probably below horizon!")
@@ -6438,8 +6536,7 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromDec = toDec
 
     Log2(2,"***WHERE WE STOPPED MOVING, ACCORDING TO THE SLEWING FLAG***")
-    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    Log2(3,"JNow RA=" + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1) + "   Dec=" + DegreesToDMS( vState.MOUNT.Declination ))
 
     slewTime = time.time() - started
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
@@ -6556,7 +6653,10 @@ def GOTO2(desiredScopePos,vState,name=""):
        #convert to sqft arcmin, note if large, maybe bump count to delay end?
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
-       Log2(3,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))
+       if delta < .005:
+            Log2(4,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))    #suppress from regular logging
+       else:
+            Log2(3,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
            Log2(0,"Excessive motion detected after slew! %5.2f arcmin" % (delta))
            if maxExtend > 0:
@@ -6586,7 +6686,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(3,line1)
     Log2(3,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
     Log2(3,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
-    print vState.MOUNT.RightAscension,vState.MOUNT.Declination
+    #print vState.MOUNT.RightAscension,vState.MOUNT.Declination
 
     return 0 #OK
 
@@ -6830,7 +6930,7 @@ def WriteRetryFile(copyList,index):
 
 #-----------------------------------------------
 #TODO: change the below to format as HTML (and/or PHP)
-def WriteWebPage( webList, currentLine ):
+def WriteWebPage( webList, currentLine, last ):
     webfile = "C:/Apache24/htdocs/ExecPage.html"
     f = open(webfile,"w")
     f.write("<html>")
@@ -6853,8 +6953,9 @@ def WriteWebPage( webList, currentLine ):
     #              0          1         2          3          4          5
 
     for entry in webList:
-        if entry[0] < (currentLine - 10):   #only show most recent 10 commands in past, to focus on current/future commands
-            continue
+        if not last:    #only do this if in the middle of processing the last; when done want to show everything
+            if entry[0] < (currentLine - 10):   #only show most recent 10 commands in past, to focus on current/future commands
+                continue
 
         if entry[1]:
             sCompleted = "Completed"
@@ -6941,7 +7042,7 @@ def ExecuteList( theList ):
       #For entry in webList[index], set bActive = True, tStart_time = currenttime
       webList[index][2] = True      #bActive
       webList[index][3] = datetime.datetime.now()   #tStart_time
-      WriteWebPage( webList, index )   #Rewrite webpage
+      WriteWebPage( webList, index, False )   #Rewrite webpage
 
       Process( line, state)
 
@@ -6949,7 +7050,7 @@ def ExecuteList( theList ):
       webList[index][1] = True  #bExecuted
       webList[index][2] = False #bActive
       webList[index][4] = datetime.datetime.now()   #tEnd_time
-      WriteWebPage( webList, index )   #Rewrite webpage
+      WriteWebPage( webList, index, True )   #Rewrite webpage
 
       index += 1
 
@@ -6987,6 +7088,7 @@ def Process( Line, vState ):
         ("WAITUNTIL",    execWaitUntil,             0),
         ("CATGOTO",      execCatGoto,               0),      #Not implemented yet
         ("CoolerOff",    execCoolerOff,             0),
+        ("CoolerOn",     execCoolerOn,              0),
         ("ARCHIVE",      execArchive,               0),      #2011.07.30: runs __FinishSession.bat
         ("WAITFORDARK",        execWaitForDark,     0),      #2012.09.16 added feature
         ("DUMPSTATE",          execDumpState,       0),
@@ -7303,6 +7405,19 @@ def execCoolerOff(t,vState):
            Log2(0,"Cooler was already off when tried to execute CoolerOff script command")
    except:
        Error("Exception thrown when attempting to turn off cooler !?")
+   return (0,)
+
+#--------------------------------
+def execCoolerOn(t,vState):
+   #turn ON cooler;
+   try:
+       if not vState.CAMERA.CoolerOn:
+           vState.CAMERA.CoolerOn = True
+           Log2(0,"Cooler turned ON")
+       else:
+           Log2(0,"Cooler was already ON when tried to execute CoolerOn script command")
+   except:
+       Error("Exception thrown when attempting to turn ON cooler !?")
    return (0,)
 
 ##        ("FOCUS",        execFocus),    #
@@ -12028,8 +12143,9 @@ def implImagerExposure(index,dic,vState):
     #   error; stop script (2,)
     # Return tuple:  (state,skipAheadStep)
     #   where exposure: 0=exposure normal completion
-    #                   1=skip ahead
+    #                   1=skip ahead  [NOT USED IN PRACTICE?]
     #                   2=error, stop script
+    #                   3=meridian flip required, then OK to continue
     #         skipAheadStep: number = step to skip ahead to (only for state = 1)
     #
     # This code may detect a meridian limit, or a skipAhead condition
@@ -12057,7 +12173,7 @@ def implImagerExposure(index,dic,vState):
         if SettleGuiding(vState):
             #problem settling guiding
             vState.CAMERA.AbortExposure()
-            if RecoverFromBadGuiding(dic,vState):
+            if RecoverFromBadGuiding(dic,vState):       #This can do a pier flip if necessary before restarting guiding
                 return (2,)     #problem; unable to recover
 
         #2009.05.20 JU added back in base filename for sequence
@@ -12090,7 +12206,7 @@ def implImagerExposure(index,dic,vState):
             time.sleep(1)   #pause to check again for sequence end
             if LogStatus(vState,3):
                 vState.CAMERA.AbortExposure()
-                if RecoverFromBadGuiding(dic,vState):
+                if RecoverFromBadGuiding(dic,vState):       #This can do a pier flip if necessary before restarting guiding
                     return (2,)     #problem; unable to recover
 
             #decide if need to stop for skip ahead event
@@ -12110,6 +12226,8 @@ def implImagerExposure(index,dic,vState):
                 # Flip_And_Reacquire_Target if there are more images to take here
                 vState.CAMERA.AbortExposure()
                 LogConditions(vState)
+                return (3,)     #tell the calling routine to perform a meridian flip
+
         Log2(0,"Single sequence complete")
 
         try:
@@ -12132,7 +12250,7 @@ def implImagerExposure(index,dic,vState):
             if SettleGuiding(vState):
                 #problem settling guiding
                 vState.CAMERA.AbortExposure()
-                if RecoverFromBadGuiding(dic,vState):
+                if RecoverFromBadGuiding(dic,vState):       #This can do a pier flip if necessary before restarting guiding
                     return (2,)     #problem; unable to recover
 
         filename_i = CreateEnhancedFilename(vState.path, dic["ID"],vState,dic["bin"],dic["filter"],dic["exp"],dic["crop"])
@@ -12185,7 +12303,15 @@ def implImagerExposure(index,dic,vState):
             if LogStatus(vState,2):       #this reports if guiding problem
                 vState.CAMERA.AbortExposure()
                 Log2(4,"Aborting exposure, apparent guiding problem")
-                if RecoverFromBadGuiding(dic,vState):
+
+                #Before trying to recover guiding, see if we should stop:
+                tup = TestSkipAhead(vState)
+                if tup[0] != 0:
+                    #skip ahead event found, or error
+                    Log2(4,"Skip ahead event found, or error; returning %d" % tup[0])
+                    return tup
+
+                if RecoverFromBadGuiding(dic,vState):       #This can do a pier flip if necessary before restarting guiding
                     Log2(0,"Unable to recover from bad guiding")
                     return (2,)     #problem; unable to recover
 
@@ -12212,7 +12338,7 @@ def implImagerExposure(index,dic,vState):
                 Log2(4,"MeridianSafety alert; aborting exposure")
                 LogConditions(vState)
                 vState.CAMERA.AbortExposure()
-                return (0,)
+                return (3,)     #tell calling routine to perform a meridian flip
 
         Log2(2,"Exposure complete")
 
@@ -12657,11 +12783,14 @@ def CalibrateOrRefocusForNewTarget(fstar,vState):
     #then regardless it calibrates imager offset from guider field
     LogOnly("**Entry to CalibrateOrRefocusForNewTarget")
 
-    dt = FORCE_REFOCUS_TIME_DIFF - (time.time() - vState.TempMeasureTime)
-    if dt > 0:
-        Log2(2,"Do not attempt to refocus yet (wait another %d minutes)" % ((dt/60)))
-        LogOnly("**Exit from CalibrateOrRefocusForNewTarget (nothing done)")
-        return False    #OK to proceed
+    #2019.08.25 JU: change this; decided that we ALWAYS want to refocus after pier flip; sometimes
+    # the optics seems to shift focus after the pier flip, so want to do fresh focus no matter
+    # how recently it was already done.  Disable the following code.
+    #dt = FORCE_REFOCUS_TIME_DIFF - (time.time() - vState.TempMeasureTime)
+    #if dt > 0:
+    #    Log2(2,"Do not attempt to refocus yet (wait another %d minutes)" % ((dt/60)))
+    #    LogOnly("**Exit from CalibrateOrRefocusForNewTarget (nothing done)")
+    #    return False    #OK to proceed
 
 
     #vState.ResetImagerOffset()
@@ -13010,8 +13139,6 @@ def implExp_LightExposures(dic,vState):
       else:
           Log2(1,"Exposure %d" % (i))
 
-
-
       #check for skipAhead condition; also checks time/altitude if this step is limited by that
       if TestEndConditionReached(dic,vState):     #time or altitude condition check (ignored if dLimit == "count")
         #SendToServer(getframeinfo(currentframe()),"End condition reached")
@@ -13067,8 +13194,55 @@ def implExp_LightExposures(dic,vState):
       if dCamera == "imager":
           tup = implImagerExposure(i,dic,vState)
           if tup[0] != 0:
-              Log2(4,"Stopping current step")
-              return tup      #stop this step and skip ahead to another one
+              if tup[0] == 3:
+                  #meridian flip required
+                  i = i - 1   #later repeat current exposure that we aborted to get here (only matters if taking specific number of images)
+
+                  #********************************************************************************************
+                  #THE FOLLOWING IS A COPY OF THE ABOVE CODE FOR MERIDIAN SAFETY; THIS IS JUST A DIFFERENT WAY TO DO THE SAME THING
+                  #********************************************************************************************
+                  #we reached the meridian limit
+                  #SendToServer(getframeinfo(currentframe()),"Meridian limit reached")
+                  Log2(0,"Meridian limit reached")
+
+                  #If we aren't goint to take any more images, don't bother doing pier flip, just end exposure step
+                  if TestEndConditionReached(dic,vState):     #time or altitude condition check (ignored if dLimit == "count")
+                    #SendToServer(getframeinfo(currentframe()),"End condition reached")
+                    Log2(4,"End condition reached")
+                    break
+
+                  if not vState.bContinueAfterPierFlip:
+                      #we are configured to STOP when a meridian flip is needed, do NOT
+                      # flip and reacquire on this target.
+                      Log2(1,"Stopping imaging on this target because meridian limit reached, and configured to stop when this happens.")
+                      break
+
+                  #If the current step was a "Stationary" step, I do not have a dic["pos"] entry,
+                  #so I should NOT try to continue with same target.
+                  if "pos" not in dic:
+                      Log2(1,"Do not attempt a pier flip and reacquire because we were running a STATIONARY step, and pier flip not allowed for it")
+                      break
+
+                  #else reacquire exact position after doing the flip
+                  bImagerSolve = True
+                  if dic["camera"].lower() == "guider" or dic["type"].lower() == "focus":
+                       bImagerSolve = False  #only need wide field solve for these steps
+                  Log2(4,"About to call execMeridianFlip")
+                  if execMeridianFlip(dic["pos"],dic["ID"],vState,bImagerSolve):
+                      Error("**Unable to find target after meridian flip; stop step")
+                      return (2,)
+                  if bImagerSolve:
+                      #if we are using Imager to image, we probably want to guide
+                      if StartGuidingConfirmed(dic["ID"], vState, 5):
+                          Error("**Unable to start guiding (after meridian flip) even after several attempts")
+                          ##SafetyPark(vState)
+                          ##raise SoundAlarmError,'Halting program'
+                          raise WeatherError
+
+                  Log2(2,"Completed meridian flip during Light Exposure loop.")
+              else:
+                  Log2(4,"Stopping current step")
+                  return tup      #stop this step and skip ahead to another one
           #2019.06.11 JU: THIS IS THE PROBLEM LOCATION: IF PIER LIMIT REACHED, IT JUST KEEPS RUNNING HERE
 
       if dCamera == "guider":
@@ -13077,6 +13251,7 @@ def implExp_LightExposures(dic,vState):
               bLast = True
           tup = implGuiderExposure(i,dic,vState,bLast)
           if tup[0] != 0:
+              #TODO: maybe add pier flip check logic here
               return tup      #stop this step and skip ahead to another one
       Log2(4,"Bottom of LightExposures loop")
 

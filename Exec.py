@@ -4348,6 +4348,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         #   1003 = the wait function called before anything was uploaded
         #   1004 = Astrometry.net returned result of 'faiure', it could not solve the image (this can happen if image is blank)
         #   1005 = Astrometry.net returned unreasonable declination value (too far south, < -30 degrees)
+        #the next error value is tested for later
+        #   1006 = Astrometry.net returned coord unreasonably far from expected location
 
         msg = "N/A"
         if status == 1001:
@@ -4371,7 +4373,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
 
         del client
         return (False, 0., 0.,0.)
-
+        
+    #It appears to have worked 
     Log2(2,"Astrometry.net results returned; successful")
     try:
         solvedRA = float(client.solved_RA) / 15      #convert degrees into hours: 360/24 = 15
@@ -4381,23 +4384,38 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         del client
         return (False, 0., 0.,0.)
 
-    if camera == 1:
-        vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
-
-    if camera == 0:
-        Log2(1,"***narrow****")
-    else:
-        Log2(1,"****WIDE*****")
-    Log2(1,"** SOLVED! **     (%5.2f sec)  Astrometry.net" % (end-start))
-    Log2(1,"*************")
-    Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
-
     diffRA = solvedRA - expectedPos.dRA_J2000()
     diffDec = solvedDec - expectedPos.dDec_J2000()
     DiffRAdeg = diffRA * 15 * cosd(expectedPos.dDec_J2000())   #convert RA diff into degrees, adjusted for declination
     delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
 
+    if delta <= 90:
+        if camera == 1:
+            vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
+
+        if camera == 0:
+            Log2(1,"***narrow****")
+        else:
+            Log2(1,"****WIDE*****")
+        Log2(1,"** SOLVED! **     (%5.2f sec)  Astrometry.net" % (end-start))
+        Log2(1,"*************")
+        Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
+
     Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
+    
+    if delta > 90:
+        #There is no way this is a valid result ( >90 arcminutes); it is too far away
+        msg = "1006: Astrometry.net returned unreasonable result, TOO FAR AWAY FROM EXPECTED LOCATION (too few stars?)"
+        Log2(0,"Astronmetry.net Result: FAILED, status = %s" % msg)
+        Log2(2, "vvvvvvvvvv")
+        Log2(2, "> failed <             (using Astrometry.net)" )
+        Log2(2, "^^^^^^^^^^")
+        Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
+
+        del client
+        return (False, 0., 0.,0.)
+        
+
     Log2Summary(1,"AN " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
 
     #NOTE: I AM NOT WRITING THE SOLVED VALUES INTO THE IMAGES HERE
@@ -4517,7 +4535,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 
     pp.FindImageStars()
     numImageStars = len(pp.ImageStars)
-    Log2(2,"Number of image stars: %d" % numImageStars)
+    Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
 
     Log2(4,"pp.ArcsecPerPixelHoriz = %f" % pp.ArcsecPerPixelHoriz)
     Log2(4,"pp.ArcsecPerPixelVert = %f" % pp.ArcsecPerPixelVert)

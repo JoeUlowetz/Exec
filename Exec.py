@@ -90,6 +90,11 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #
 #2017.02.25 JU: In park command, add logic to report as mount moves like we do for pier flip; there was a problem
 #               parking the mount the other day; it did not end up in correct position; don't know why.
+#2017.05.07 JU: If FocusMax attempts to run its autofocus routine spanning local midnight, it appears to lock up and will not run
+#               any more (I've been using FocusMax version 3.7.0.86 for many years). Last night was apparently the first time when
+#               it ever tried to autofocus spanning midnight.  Add feature that if attempting to start autofocus run within
+#               5 minutes of local midnight, just pause until after midnight.
+
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -4052,11 +4057,11 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
         #print "desiredPos=",desiredPos
         #print "targetID=",targetID
         #print "filename=",filename
-        
+
         tup = AdvancedPlateSolve(camera, desiredPos, targetID, filename, 0, vState)
         #print "After call to AdvancedPlateSolve"
         #print "tup=",tup
-        
+
 
         success = tup[0]
         deltaSolve = tup[3]  #arcmin difference between desired and solved position (value is 0 if not success)
@@ -4279,7 +4284,7 @@ def AdvancedPlateSolve( camera, expectedPos, targetID, filename, trace, vState )
     #print "targetID=",targetID
     #print "filename=",filename
     #print "trace=",trace
-    
+
     #This calls the Pinpoint engine software for the specified file.
     # This is called by PinPointSingle()
     # This decides whether PinPoint or Astrometry.net is being used
@@ -4329,6 +4334,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2(2, "vvvvvvvvvv")
         Log2(2, "> failed <             (EXCEPTION calling Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
+        Log2(2, "Suggestion: try opening web site nova.astrometry.net to see if it is currently working." )
+        Log2(2, "If not working, change cmd file to:  Set_Astrometry.net=0   to disable for now")
         return (False, 0., 0.,0.)
 
     status = client.solved_valid
@@ -5624,7 +5631,7 @@ def TestForMeridianLimit(threshold,verbose,vState):
         if verbose == 1:
             #only log this if called from "MeridianCross"
             Log2(2,"MeridianCross: OTA pointing west so skip test")
-#IS THIS LOG MSG CORRECT? THERE IS NO TEST OF SIDE-OF-SKY            
+#IS THIS LOG MSG CORRECT? THERE IS NO TEST OF SIDE-OF-SKY
         return False    #we cannot have a pier flip situation during this exposure because already pointing west
                     # regardless of any changes in SideOfPier  (well, theoretically, if tracking an object
                     # underneath the pole, that would be a valid case for a pier flip, but I don't plan to
@@ -6897,8 +6904,8 @@ def execPark(t,vState):
                #convert to sqrt arcmin, note if large, maybe bump count to delay end?
                DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
                delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
-                
-               if delta > 2.00:      #(larger value because 'Park' moves relative to sky; threshold to detect still moving (may need to readjust this)               
+
+               if delta > 2.00:      #(larger value because 'Park' moves relative to sky; threshold to detect still moving (may need to readjust this)
                    Log2(2,"Mount still moving: %5.2f arcmin (count=%d, extend=%d) pier=%d/%d" % (delta,count,maxExtend,vState.MOUNT.SideOfPier,SideOfSky(vState)))
                    if maxExtend > 0:
                        maxExtend -= 1
@@ -10402,6 +10409,17 @@ def callFocusMax(dic,vState):
         Log2(0,"FocusMax attempt starting, initial position: " + pos)
         retryAttempt -= 1
 
+        #2017.05.07 JU: new feature: if current time is less than 5 minutes BEFORE LOCAL MIDNIGHT, sleep right now until after midnight.
+        # There appears to be a bug in FocusMax where it hangs up if trying to run autofocus spanning midnight.
+        now = datetime.datetime.now().time()
+        if now.hour == 23 and now.minute >= 55:
+            #go to sleep for 5 minutes (plus a little extra just to be sure)!
+            Log2(0,"WARNING: running FocusMax over midnight can cause lockup")
+            Log2(0,"Therefore, we will wait 5 minutes right not to be sure we do not start autofocus run")
+            Log2(0,"until after local midnight passes.")
+            Log2Summary(1,"FocusMax sleep briefly to avoid running at midnight!")
+            time.sleep( (5*60) + 2)
+            Log2(1,"Resuming FocusMax after waiting until past local midnight.")
 
 #New section
         try:

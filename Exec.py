@@ -431,6 +431,9 @@ class SoundAlarmError( Exception ):
 class WeatherError( Exception ):
    pass
 
+class RerunCommand( Exception ):    #This restarts the current command from the beginning; useful if PP solution confused and need to start over
+   pass
+
 class HorizonError( Exception ):    #throw if current target is below western tree horizon, to stop trying to image it
    pass
 
@@ -1587,7 +1590,15 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
             #   cos(result) = (sin(dec1) * sin(dec2)) + cos(dec1) * cos(dec2) * sin(ra1 - ra2)
             #Where all coords are given in RADIANS (RA is not Hours, it is angle)
             #I found this: physics.stackexchange.com/questions/224950/how-can-i-convert-right-ascension-and-declination-to-distances
-            
+#TODO: do additional delta calc using new formula and see if result much different? 
+            # math.cos( math.radians(degrees) )
+            ra1 = math.radians( vState.gotoPosition.dRA_JNow() * 15 )   #Desired
+            dec1 = math.radians( vState.gotoPosition.dDec_JNow() )
+            ra2 = math.radians( nowPos.dRA_JNow() * 15 )                #Actual
+            dec2 = math.radians( nowPos.dDec_JNow() )
+            cos_result = (math.sin(dec1) * math.sin(dec2)) + math.cos(dec1) * math.cos(dec2) * math.sin(ra1 - ra2)
+            result_rad = math.acos(cos_result)
+            result_deg = math.degrees(result_rad) * 60
 
             #WHY did I think I needed this? Because sometimes guiding thinks it is working
             # but we are just looking at noise and not actually tracking the guide star.
@@ -1599,27 +1610,36 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
             #(added 2013.07.17): And if guiding is NOT working, Gemini still calculates current
             # scope position based on model, so it can detect if moved far from target coord
             # even if not guiding!!!
-            if delta > vState.driftThreshold:
-                #PROBLEM
-                Error("Position exceeded drift threshold (%d)=======================================" % sourceNum)
-                Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
-                Log2(2,"Where we want to be:")
-                line0,line1 = vState.gotoPosition.dump2()
-                Log2(3,line0)
-                Log2(3,line1)
-                Log2(2,"Where the mount says we currently are:")
-                line0,line1 = nowPos.dump2()
-                Log2(3,line0)
-                Log2(3,line1)
+            #2019.04.23 JU: disable this logging completely; there is a slow drift probably due to guiding pushing
+            #   scope away from location due to polar alignment. 
+            if 0:
+                if delta > vState.driftThreshold:
+                    #PROBLEM
+                    Log2(0,"delta = %5.2f arcmin (%5.2f) -- Position exceeded drift threshold (%d)===" % (delta,result_deg,sourceNum))      #Temporary logging
+                    if 0:
+                        #TEMP DISABLE this logging
+                        Error("Position exceeded drift threshold (%d)===" % sourceNum)
+                        Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
+                        Log2(2,"Where we want to be:")
+                        line0,line1 = vState.gotoPosition.dump2()
+                        Log2(3,line0)
+                        Log2(3,line1)
+                        Log2(2,"Where the mount says we currently are:")
+                        line0,line1 = nowPos.dump2()
+                        Log2(3,line0)
+                        Log2(3,line1)
 
-                Log2(2,"Goto position:")
-                Log2(3,vState.gotoPosition.dump())
-                Log2(2,"NowPos position:")
-                Log2(3,nowPos.dump())
+                        Log2(2,"Goto position:")
+                        Log2(3,vState.gotoPosition.dump())
+                        Log2(2,"NowPos position:")
+                        Log2(3,nowPos.dump())
 
-                #To disable this feature, comment out the return True statement
-#2019.03.19 JU: this problem happened again (ST LMi this time) so disable again
-                #return True
+                    #To disable this feature, comment out the return True statement
+    #2019.03.19 JU: this problem happened again (ST LMi this time) so disable again
+                    #return True
+                else:
+                    Log2(0,"delta = %5.2f arcmin (%5.2f)" % (delta,result_deg))      #Temporary logging
+            
 
        except:
            Log2(1,"Exception trying to read mount current position for threshold")
@@ -6944,6 +6964,18 @@ def Process( Line, vState ):
                 while True:
                     try:
                         tret = fn(tupClean,vState)
+                        
+                    except RerunCommand:    #(not sure if I want to use this feature yet)
+                        #is sun too high?
+                        if TestSunAltitude(-6):
+                            Error("We wanted to rerun this command but sun altitude too high for retry of this command")
+                            tret = (1,)
+                            break
+                        Error("*************************************")
+                        Error("*       Rerunning this command      *")
+                        Error("*************************************")
+                        continue
+                    
                     except HorizonError:
                         Error("*************************************")
                         Error("*           Horizon error           *")
@@ -12005,7 +12037,7 @@ def implImagerExposure(index,dic,vState):
         except:
             currentPos = "(exception)"
             currentTemp = "(exception)"
-        Log2Summary(2,"Exposure complete %s  Temp:%s  Pos:%s SideOfSky=%d" % (filename_i,currentTemp,currentPos,SideOfSky(vState)))
+        Log2Summary(2,"Exposure complete %s  Temp:%s  Focus:%s SideOfSky=%d" % (filename_i,currentTemp,currentPos,SideOfSky(vState)))
 
         ReportImageFWHM(vState, filename_i)     #log info on image
 

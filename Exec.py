@@ -1585,7 +1585,8 @@ def DumpGuideErrorList(label,guideList):
 #  1234567890
 #  --++-+-+--  (ex) record last 10 signs
 #--------------------------------
-def LogStatus( vState ):  #write out frequent status info to special file
+def LogStatus( vState, sourceNum ):  #write out frequent status info to special file
+    # sourceNum = number to indicate where this was called from
     #Returns True if bad guiding detected
     #Summary of flag column values:
     #   E   threw an exception when trying to read whether guider is running
@@ -1631,9 +1632,39 @@ def LogStatus( vState ):  #write out frequent status info to special file
             # even if not guiding!!!
             if delta > vState.driftThreshold:
                 #PROBLEM
-                Error("Position exceeded drift threshold")
+                print 90
+                Error("Position exceeded drift threshold (%d)=======================================" % sourceNum)
+                print 91
                 Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
-                return True
+                print 92
+                Log2(2,"Where we want to be:")
+                print 93
+                line0,line1 = vState.gotoPosition.dump2()
+                Log2(3,line0)
+                Log2(3,line1)
+                print 94
+                Log2(2,"Where the mount says we currently are:")
+                print 95
+                line0,line1 = nowPos.dump2()
+                Log2(3,line0)
+                Log2(3,line1)
+
+                print 1,diffRA, diffDec, DiffRAdeg,delta
+                Log2(2,"Goto position:")
+                print 2
+                Log2(3,vState.gotoPosition.dump())
+                print 3
+                Log2(2,"NowPos position:")
+                print 4
+                Log2(3,nowPos.dump())
+                print 5
+                print nowPos.dRA_JNow()
+                print nowPos.dDec_JNow()
+                print "Raw current coords from mount:"
+                print vState.MOUNT.RightAscension,vState.MOUNT.Declination
+                print "----------------------------------------"
+                #TEMP DISABLE THIS, ONLY LOG IT
+                #return True
 
        except:
            Log2(1,"Exception trying to read mount current position for threshold")
@@ -2665,7 +2696,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
         while vState.CAMERA.GuiderRunning:
             count += 1
             time.sleep(2)    #wait until the guide exposure is done
-            LogStatus(vState)   #do NOT test guider quality here; we are not guiding!
+            LogStatus(vState,9)   #do NOT test guider quality here; we are not guiding!
             imaging_db.RecordGuider(vState,False,1041)
 
         X = vState.CAMERA.GuiderXStarPosition
@@ -2723,7 +2754,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
         while vState.CAMERA.GuiderRunning:
             time.sleep(2)    #wait until the guide exposure is done
             count += 1
-            LogStatus(vState)   #do NOT test guider quality here; we are not guiding!
+            LogStatus(vState,8)   #do NOT test guider quality here; we are not guiding!
             imaging_db.RecordGuider(vState,False,1042)
 
         Log2(2,"Guider field exposure complete(2)")
@@ -4015,7 +4046,7 @@ def TakeNarrowImage(exposure,vState):   #used by Pinpoint solve routine
     LogStatusHeaderBrief()
     while not vState.CAMERA.ImageReady:
         time.sleep(2)
-        LogStatus(vState)
+        LogStatus(vState,7)
 
     #Log2(4,"PP---END narrow field exposure")
     doc = vState.CAMERA.Document     #point to image just taken
@@ -4029,7 +4060,7 @@ def TakeWideExposure(exposure,vState):  #used by Pinpoint solve routine
     LogStatusHeaderBrief()
     while vState.CAMERA.GuiderRunning:
         time.sleep(2)    #waiting until the guide exposure is done
-        LogStatus(vState)
+        LogStatus(vState,6)
     #Log2(4,"PP---END wide field exposure")
     doc = GetGuiderDoc(vState)
     return doc
@@ -5702,7 +5733,7 @@ def ExposeWideFlat(desiredADU, rangeAllowed, hintExp, repeat, flatBaseName, vSta
             vState.CAMERA.GuiderExpose( expose )
             while vState.CAMERA.GuiderRunning:
                 time.sleep(2)    #waiting until the guide exposure is done
-                LogStatus(vState)
+                LogStatus(vState,5)
             doc = GetGuiderDoc(vState)
 
             tup = doc.CalcAreaInfo(0,0,doc.XSize-1,doc.YSize-1,0)   #look at entire frame
@@ -6233,6 +6264,11 @@ def GOTO2(desiredScopePos,vState,name=""):
     #This is ONLY called by GOTO(), so that GOTO() can handle multiple retry attempts if necessary
     #Return:  0 = success, 1 = problem, 2 = target below horizon
 
+    Log2(2,"***START OF GOTO2; COORDS DESIRED ARE:***")
+    line0,line1 = desiredScopePos.dump2()
+    Log2(3,line0)
+    Log2(3,line1)
+    
     #record the location we intend to end at
     vState.gotoPosition = desiredScopePos
     vState.gotoPosition.isValid = False     #disable this for now so guiding during Narrow PP doesn't encounter this
@@ -6328,6 +6364,9 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromRA = toRA    #for next check
        fromDec = toDec
 
+    Log2(2,"***we just stopped moving according to slewing flag***")
+    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
 
     slewTime = time.time() - started
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
@@ -6414,6 +6453,10 @@ def GOTO2(desiredScopePos,vState,name=""):
         #SafetyPark(vState)
         #raise SoundAlarmError,'Slew failed to reach desired Dec'
 
+    Log2(2,"***we are now about to monitor location to see if still moving***")
+    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+        
     #!! Check for excessive movement after mount says it stopped
     maxExtend = 60  #max we can extend this delay if we see movement
     count = 5       #initial delay to see if movement
@@ -6432,7 +6475,7 @@ def GOTO2(desiredScopePos,vState,name=""):
        #convert to sqft arcmin, note if large, maybe bump count to delay end?
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
-       Log2(4,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))
+       Log2(3,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
            Log2(0,"Excessive motion detected after slew! %5.2f arcmin" % (delta))
            if maxExtend > 0:
@@ -6442,6 +6485,10 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromRA = toRA    #for next check
        fromDec = toDec
 
+    Log2(2,"***we exited loop looking for after movement; it should be stationary***")
+    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+       
     afterScopePos = Position()     #store position of scope before movement
     if runMode == 1 or runMode == 2:
         afterScopePos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination,name,cTypeReported)
@@ -6452,6 +6499,14 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(4,"vState.gotoPosition.isValid set to TRUE")
     Log2(5,"vState.gotoPosition = " + vState.gotoPosition.dump() )
 
+    Log2(2,"***Finished with GOTO movement; this is where we stopped***")
+    line0,line1 = afterScopePos.dump2()
+    Log2(3,line0)
+    Log2(3,line1)
+    Log2(3,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(3,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    print vState.MOUNT.RightAscension,vState.MOUNT.Declination
+    
     return 0 #OK
 
 #=====================================================================================
@@ -7156,7 +7211,7 @@ def execPark(t,vState):
     Log2(0,"-------------------------------------------------------------")
     StopGuiding(vState)     #make sure this is off or it will complain
     LogStatusHeaderBrief()
-    LogStatus(vState)
+    LogStatus(vState,4)
     Log2(0,"*** Park mount (this can take a minute to complete)")
     if runMode == 3:
         LogOnly("Validate skipping rest of: execPark")
@@ -11830,7 +11885,7 @@ def implImagerExposure(index,dic,vState):
         LogStatusHeaderBrief()
         while vState.CAMERA.SequenceRunning:
             time.sleep(1)   #pause to check again for sequence end
-            if LogStatus(vState):
+            if LogStatus(vState,3):
                 vState.CAMERA.AbortExposure()
                 if RecoverFromBadGuiding(dic,vState):
                     return (2,)     #problem; unable to recover
@@ -11924,7 +11979,7 @@ def implImagerExposure(index,dic,vState):
             #except:
             #    pass
             time.sleep(1)
-            if LogStatus(vState):       #this reports if guiding problem
+            if LogStatus(vState,2):       #this reports if guiding problem
                 vState.CAMERA.AbortExposure()
                 if RecoverFromBadGuiding(dic,vState):
                     return (2,)     #problem; unable to recover
@@ -12048,7 +12103,7 @@ def implGuiderExposure(index,dic,vState,bLast):
     LogStatusHeaderBrief()
     while vState.CAMERA.GuiderRunning:  #--------------------
         time.sleep(2)
-        LogStatus(vState)
+        LogStatus(vState,1)
 
         #decide if need to stop for skip ahead event
         tup = TestSkipAhead(vState)

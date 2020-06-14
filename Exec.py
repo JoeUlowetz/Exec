@@ -7,6 +7,45 @@
 BASE = r"C:\Users\W510\Documents"
 BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 
+#================================================================================
+# COM Objects used here:
+#--------------------------
+#   MaxIm.CCDCamera                 Control of CCD cameras
+#   ASCOM.GeminiTelescope.Telescope Control of Gemini Telescope mount
+#   FocusMax.FocusControl           Control of Robofocus focuser via FocusMax
+#   FocusMax.Focuser                Read Robofocus position and (air)temperature
+#   MiniSAC.Catalog                 Catalog of coordinates, including CV's that I add
+#   PinPoint.Plate                  PinPoint astrometric solve
+#   DriverHelper.Util               Utility functions for formatting coordinates
+#   NOVAS.Star                      Used to precess JNow - J2000
+#   NOVAS.PositionVector            "
+#   TheSky6.StarChart               Used for Planet/Minor planet lookup
+#   TheSky6.RASCOMTheSky            Used to calculate Minor planet current coord
+#
+#
+# COM Objects documentation
+#--------------------------
+#   MaxIm.CCDCamera                 MaxImDL5 Menu: Help / Help Topics; Contents: Scripting
+#   ASCOM.GeminiTelescope.Telescope https://ascom-standards.org/Help/Developer/html/Methods_T_ASCOM_DriverAccess_Telescope.htm 
+#                                       Look in ASCOM.DriverAccess / TelescopeClass for Properties and Methods
+#                                       Note use of CommandBlind() to directly access Gemini feature not available through ASCOM interface
+#   FocusMax.FocusControl           Astronomy Documents / FocusMax Help.pdf; see section on Scripting for FocusControl and Focuser
+#   FocusMax.Focuser                "
+#   MiniSAC.Catalog                 Call SelectObject() with the name of the object; if it returns True the equatorial 
+#                                       coords are in the RightAscension and Declination properties
+#   PinPoint.Plate                  Visual PinPoint, Help tab: Scripting the Engine, Plate Object
+#   DriverHelper.Util               Utility functions for formatting coordinates
+#   NOVAS.Star                      NOVAS_C3.1_Guide.pdf  (full path listed below)
+#   NOVAS.PositionVector            "
+#   TheSky6.StarChart               TheSky6 Menu: Help / Content and Index; Contents: Scripted Operation
+#   TheSky6.RASCOMTheSky            "
+#
+#   C:\Program Files (x86)\ASCOM\Platform 6 Developer Components\Developer Documentation
+#       NOVAS_C3.1_Guide.pdf
+#================================================================================
+
+
+
 #todo: add feature to set preferred Dec slew direction to target, to take up backlash before guiding
 
 #implExp_InitialMovement:
@@ -104,6 +143,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #2018.01.06 JU: Rewrote PrecessLocalToJ2000() and PrecessJ2000ToLocal() to use PyEphem library now
 #2018.01.07 JU: Initial changes to Precess...() routines fixed; should work now.
 #2018.04.08 JU: Changed settings for vState.MeridianSafety and vState.MeridianPast because they were too large and mount would stop first
+#2018.04.28 JU: Added focuser temperature and position setting to Summary log when reporting exposure
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -1548,10 +1588,11 @@ def LogStatus( vState ):  #write out frequent status info to special file
        nowPos = Position()
        try:
             nowPos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination)
-            Log2(4,"nowPos.dump:")
-            Log2(4,nowPos.dump())
-            Log2(4,"vState.gotoPosition.dump:")
-            Log2(4,vState.gotoPosition.dump())
+            #2018.08.31 JU: commented out these lines; they make logall file unreadable
+            #Log2(4,"nowPos.dump:")
+            #Log2(4,nowPos.dump())
+            #Log2(4,"vState.gotoPosition.dump:")
+            #Log2(4,vState.gotoPosition.dump())
 
 
             diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
@@ -1839,7 +1880,7 @@ def LogStatusShort(vState):
    except:
       sideofpier = 9
 
-   value = "%10s %9s %4s %5s %d %10s" % (
+   value = "RA:%10s Dec:%9s Alt:%5s Az:%5s Pier:%d Sidereal:%10s" % (
       UTIL.HoursToHMS(dRA,":",":","",1),                      #string
       DegreesToDMS(dDec),                        #string
       str(round(fAlt,1)),                        #string
@@ -4906,7 +4947,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
             Log2(1,"***narrow****")
             Log2(1,"*> IGNORED <*     (%5.2f sec)  Stars: Image = %d, Catalog = %d" % (end-start,len(pp.ImageStars),len(pp.CatalogStars)))
             Log2(1,"*************")
-            Log2Summary(1,"PP " + sCamera + " assumed worked, but busy field and scale problem; # stars = " % numImageStars)
+            Log2Summary(1,"PP " + sCamera + " assumed worked, but busy field and scale problem; # stars = %d" % numImageStars)
 
             solvedRA = expectedPos.dRA_J2000()
             solvedDec = expectedPos.dDec_J2000()
@@ -6158,7 +6199,7 @@ def PredictSideOfPier(pos, vState):
 
 def RandomSafeLocation():      #generate someplace in sky, away from meridian and horizons (values are string values of degrees)
     #return strings for (azimuth,elevation)
-    return random.choice([ 
+    return random.choice([
         ( '21','63'),( '40','54'),( '56','41'),( '47','71'),( '64','58'),( '72','43'),
         ( '89','60'),( '88','39'),('134','70'),('116','57'),('105','39'),( '87','77'),
         ('162','58'),('134','47'),('119','35'),('164','47'),('142','40'),('159','37'),
@@ -6171,7 +6212,7 @@ def RandomSafeLocation():      #generate someplace in sky, away from meridian an
 
 def GOTO(targetScopePos,vState,name=""):
     #return false if OK, True if unable to GOTO position (below horizon?)
-    
+
     for attempt in range(20):
         problem = GOTO2(targetScopePos,vState,name)
         if problem == 0:
@@ -6179,16 +6220,17 @@ def GOTO(targetScopePos,vState,name=""):
             return False    #success
         if problem == 2:
             Log2(1,"[GOTO] Unable to GOTO target, below horizon; attempt = %d" % attempt)
+            Log2Summary(1,"[GOTO] Unable to GOTO target, below horizon; attempt = %d  %s" % (attempt,name))
             return True    #failure, but in a good way
-            
+
         Log2(1,"[GOTO] FAILED for target GOTO on attempt = %d" % attempt)
-        Log2Summary(1,"Begin Random goto solution")
+        Log2Summary(1,"Begin Random GOTO solution because GOTO failed, attempt = %d %s"  % (attempt,name))
         #
         #not able to move to specified location, try moving to some other location
         for subAttempt in range(5):
             az, el = RandomSafeLocation()      #generate someplace in sky, away from meridian and horizons (values are string values of degrees)
             Log2(1,"[GOTO] Attempt random sky location: azimuth: %s, elevation: %s" % (az,el))
-            ra, dec = AzElev2RaDec(az,el)       #converts to JNow 
+            ra, dec = AzElev2RaDec(az,el)       #converts to JNow
             randPos = Position()
             randPos.setJNowDecimal(ra,dec,"RandPos")
             sRA,sDec = randPos.getJNowString()
@@ -6209,8 +6251,8 @@ def GOTO(targetScopePos,vState,name=""):
     Log2Summary(1,"Unable to solve GOTO problem with Random solution; perform SafetyPark")
     SafetyPark(vState)
     raise SoundAlarmError,'Slew failed to reach desired location after multiple attempts'
-    
-            
+
+
 #--------------------------------------------------------------------------------------------------------
 def GOTO2(desiredScopePos,vState,name=""):
     #This is ONLY called by GOTO(), so that GOTO() can handle multiple retry attempts if necessary
@@ -6260,8 +6302,8 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(4,"desiredScopePos.dump():")
     Log2(4,desiredScopePos.dump())
 
-    
-#start of subroutine here----------------------------    
+
+#start of subroutine here----------------------------
     Log2(4,"About to issue SlewToCoordinatesAsync")
     try:
         vState.MOUNT.SlewToCoordinatesAsync(dRA_JNow_destination, dDec_JNow_destination)       # Movement occurs here <----------------
@@ -11717,7 +11759,16 @@ def implImagerExposure(index,dic,vState):
                 vState.CAMERA.AbortExposure()
                 LogConditions(vState)
         Log2(0,"Single sequence complete")
-        Log2Summary(2,"Sequence complete")
+
+        try:
+            #2018.04.28 JU: new feature: include focuser position and temperature in summary log line for exposure
+            currentPos = str(vState.FOCUSER.Position)
+            currentTemp = str(vState.FOCUSER.Temperature)
+        except:
+            currentPos = "(exception)"
+            currentTemp = "(exception)"
+        Log2Summary(2,"Sequence complete  Temp:%s  Pos:%s" % (currentTemp,currentPos))
+
         FixSequenceHeaders(dic["ID"],beforeList,vState)
         ReportImageFWHM(vState,"Seq: " + sequenceBaseFilename)     #log info on last image taken in sequenece
 
@@ -11807,7 +11858,15 @@ def implImagerExposure(index,dic,vState):
                 return (0,)
 
         Log2(2,"Exposure complete")
-        Log2Summary(2,"Exposure complete " + filename_i)
+
+        try:
+            #2018.04.28 JU: new feature: include focuser position and temperature in summary log line for exposure
+            currentPos = str(vState.FOCUSER.Position)
+            currentTemp = str(vState.FOCUSER.Temperature)
+        except:
+            currentPos = "(exception)"
+            currentTemp = "(exception)"
+        Log2Summary(2,"Exposure complete %s  Temp:%s  Pos:%s" % (filename_i,currentTemp,currentPos))
 
         ReportImageFWHM(vState, filename_i)     #log info on image
 

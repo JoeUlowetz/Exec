@@ -38,7 +38,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #               if unable to get FocusMax to have reasonable result.
 #2012.03.17 JU: added FixGuidingStateSetting
 #2012.05.24 JU: After weather safety wait and before retry movement, reconnect the mount.
-#2012.06.08 JU: Rewrote PrecessLocalToJ2000() and PrecessJ2000ToLocal() to use NOVAS PositionVector Precess cmd
+#2012.06.08 JU: Rewrote PrecessLocalToJ2000() and PrecessJ2000ToLocal() to use NOVAS PositionVector Precess cmd  [changed 2018.01.06]
 #2012.06.18 JU: Changed HoursToHMS to display tenths of a second precision in RA strings from now on: HH:MI:SS.S
 
 #2012.07.12 JU: Added ReportImageFWHM(); logs brightest 100 stars in image for now;
@@ -101,6 +101,8 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #2017.09.12 JU: Revise logic for calling Pinpoint and Astrometry.net logic
 #2018.01.03 JU: Changed Astrometry.net call to run in separate thread; if it ever takes longer than 10 minutes
 #               to complete, the feature is disabled and the thread is abandoned so the rest of the logic can work normally.
+#2018.01.06 JU: Rewrote PrecessLocalToJ2000() and PrecessJ2000ToLocal() to use PyEphem library now
+#2018.01.07 JU: Initial changes to Precess...() routines fixed; should work now.
 
 
 #If FocusMax does not give good answer:
@@ -168,7 +170,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 
 gCamera = "QSI-583"     #Values are: "QSI-583" or "ST-402" (default)
 
-from an_client import Client    #for Astrometry.net
+from an_client2 import Client    #for Astrometry.net
 
 import pythoncom            #added 2013.10.02 JU
 import win32com.client      #needed to load COM objects
@@ -181,6 +183,8 @@ import string
 
 import subprocess
 import threading
+
+import ephem
 
 #Exec4n.py 2015.12.13
 import socket
@@ -468,6 +472,7 @@ class cState:
         # we have robably lost the guide star.
         self.driftThreshold = 5.0   #was 4.0
         self.gotoPosition = Position()
+        self.gotoPosition.isValid = False
 
 ##        #flag whether temp comp has been enabled yet for current run (need to have focus event to enable)
 ##        self.TempCompPosition = 0
@@ -810,10 +815,9 @@ class Position:
     def dump(self):  #returns long string that can be printed
        global UTIL
        ret = "\n"
-       #if not self.isValid:
-       #   ret += "THIS OBJECT IS NOT VALID!\n"
-       #   return ret
-       ret =  "Position dump:\n"
+       if not self.isValid:
+          ret += "[NOT VALID] "
+       ret +=  "Position dump:\n"
        ret += "Name:  %s\n" % (self.posName)
        ret += "J2000: %s  %s\n" % (UTIL.HoursToHMS(self.__RAJ2000,":",":","",1), DegreesToDMS(self.__DecJ2000))
        ret += "JNow:  %s  %s\n" % (UTIL.HoursToHMS(self.__RAJNow,":",":","",1), DegreesToDMS(self.__DecJNow))
@@ -1536,41 +1540,43 @@ def LogStatus( vState ):  #write out frequent status info to special file
 
    #Where are we, and are we still close to the location we want?
    #TODO: IF WE ARE TAKING DARKS/BIAS/FLATS AND WE ARE PARKED WE DO NOT WANT TO DO THIS!!!
-   nowPos = Position()
-   try:
-        nowPos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination)
-        Log2(1,"nowPos.dump:")
-        Log2(1,nowPos.dump())
-        Log2(1,"vState.goto.dump:")
-        Log2(1,vState.gotoPosition.dRA_JNow().dump())
-        
-        
-        diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
-        diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
-        DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
-        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
+   #2018.01.06 JU: change this section so it only runs if vState.gotoPosition.isValid
+   if vState.gotoPosition.isValid:
+       nowPos = Position()
+       try:
+            nowPos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination)
+            Log2(4,"nowPos.dump:")
+            Log2(4,nowPos.dump())
+            Log2(4,"vState.gotoPosition.dump:")
+            Log2(4,vState.gotoPosition.dump())
+            
+            
+            diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
+            diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
+            DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
+            delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
 
-#WHY did I think I needed this? Because sometimes guiding thinks it is working
-# but we are just looking at noise and not actually tracking the guide star.
-# When we have drifted some distance away then we may no longer be pointing at
-# the right field and should re-acquire it.
-#Note that if guiding IS actually working correctly but polar alignment is off then
-# we can get drift as well. That isn't a real problem, but since we can't tell
-# the difference between these cases we'll treat it as an error and reacquire anyway.
-#(added 2013.07.17): And if guiding is NOT working, Gemini still calculates current
-# scope position based on model, so it can detect if moved far from target coord
-# even if not guiding!!!
-        if delta > vState.driftThreshold:
-            #PROBLEM
-            Error("Position exceeded drift threshold")
-            Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
-            return True
+            #WHY did I think I needed this? Because sometimes guiding thinks it is working
+            # but we are just looking at noise and not actually tracking the guide star.
+            # When we have drifted some distance away then we may no longer be pointing at
+            # the right field and should re-acquire it.
+            #Note that if guiding IS actually working correctly but polar alignment is off then
+            # we can get drift as well. That isn't a real problem, but since we can't tell
+            # the difference between these cases we'll treat it as an error and reacquire anyway.
+            #(added 2013.07.17): And if guiding is NOT working, Gemini still calculates current
+            # scope position based on model, so it can detect if moved far from target coord
+            # even if not guiding!!!
+            if delta > vState.driftThreshold:
+                #PROBLEM
+                Error("Position exceeded drift threshold")
+                Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
+                return True
 
-   except:
-       Log2(1,"Exception trying to read mount current position for threshold")
-       Log2(1,"check. This can usually be ignored; it can be because mount")
-       Log2(1,"has not yet moved, so no status to report yet.")
-       #niceLogExceptionInfo()      #removed message 2017.02.17 JU
+       except:
+           Log2(1,"Exception trying to read mount current position for threshold")
+           Log2(1,"check. This can usually be ignored; it can be because mount")
+           Log2(1,"has not yet moved, so no status to report yet.")
+           niceLogExceptionInfo()      #removed message 2017.02.17 JU
 
    try:
        if not vState.CAMERA.GuiderRunning:
@@ -3603,9 +3609,27 @@ def intToFilter(iFilter):
         return 'Luminance'
 
     return '<invalid code>'
+    
+def hours2rad(hours):
+    return hours / (12./math.pi)
+def deg2rad(deg):
+    return deg / (180./math.pi)
+def rad2hours(rad):
+    return rad * (12./math.pi)
+def rad2deg(rad):
+    return rad * (180./math.pi)
+    
 #--------------------------------------------------------------------------------------------------------
 def PrecessLocalToJ2000(dJNowRA, dJNowDec):
+    #Newest approach: use ephem
+    x = ephem.Equatorial(hours2rad(dJNowRA), deg2rad(dJNowDec),epoch=ephem.now())
+    y = ephem.Equatorial(x,epoch=ephem.J2000)
+    tup = (rad2hours(y.ra), rad2deg(y.dec))
+    Log2(5,"Precess: Starting JNow coords:  %s  %s" % (UTIL.HoursToHMS(dJNowRA,":",":","",1)  , DegreesToDMS(dJNowDec)))
+    Log2(5,"         Result J2000 coords:   %s  %s" % (UTIL.HoursToHMS(tup[0],":",":","",1) , DegreesToDMS(tup[1])))
+    return tup
 
+    #PREVIOUS APPROACH, WORKED (MOSTLY?)========================================================
     #New approach
     star = win32com.client.Dispatch("NOVAS.Star")
     star.RightAscension = dJNowRA
@@ -3663,7 +3687,17 @@ def PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec):
     # inputs: dJ2000RA, dJ2000Dec   decimal values in J2000
     # outputs: tuple: (dLocalRA, dLocalDec)  decimal values in Local Epoch
 
-    #New approach
+    #Newest approach: use ephem
+    x = ephem.Equatorial(hours2rad(dJ2000RA), deg2rad(dJ2000Dec),epoch=ephem.J2000)
+    y = ephem.Equatorial(x,epoch=ephem.now())
+    tup = (rad2hours(y.ra), rad2deg(y.dec))
+    Log2(5,"Precess: Starting J2000 coords:  %s  %s" % (UTIL.HoursToHMS(dJ2000RA,":",":","",1)  , DegreesToDMS(dJ2000Dec)))
+    Log2(5,"         Result JNow coords:     %s  %s" % (UTIL.HoursToHMS(tup[0],":",":","",1)  , DegreesToDMS(tup[1])))
+    return tup
+
+    
+    
+    #PREVIOUS APPROACH, WORKED (MOSTLY?)========================================================
     star = win32com.client.Dispatch("NOVAS.Star")
     star.RightAscension = dJ2000RA
     star.Declination = dJ2000Dec
@@ -4418,12 +4452,31 @@ def CountImageStars( camera, expectedPos, targetID, filename, trace, vState ):
     return numImageStars
 
 #--------------------------------------------------------------------------------------------------------
-AstrometryResult = (False, 0., 0.,0.)   #global variable to return result if thread completes
+AstrometryResult = (False, 0., 0.,0.,"n/a",-1)   #global variable to return result if thread completes
+AstrometryMaxSolveTime = 30
 def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState ):
+    global AstrometryMaxSolveTime
+    AstrometryMaxSolveTime = vState.ppState[camera].MaxSolveTime
+
+    #2017.07.03: before calling Astrometry.net, first use PinPoint to COUNT the number of stars
+    # present in the image. If the number is too low, don't bother trying Astrometry.net (probably bad weather)
+    numImageStars = CountImageStars( camera, expectedPos, targetID, filename, trace, vState )
+        
+    Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
+    if numImageStars < 10:  #ADJUST THIS
+        Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
+        Log2(2, "vvvvvvvvvv")
+        Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
+        Log2(2, "^^^^^^^^^^")
+        return (False, 0., 0.,0.) 
+    #end of Pinpoint addition feature
+
     try:
-        Log2(2,"Starting thread: CustomAstrometryNetSolve_THREAD")
-        t = threading.Thread(target=CustomAstrometryNetSolve_THREAD, args=(camera, expectedPos, targetID, filename, trace, vState))
+        Log2(2,"Defining thread: CustomAstrometryNetSolve_THREAD")
+        t = threading.Thread(target=CustomAstrometryNetSolve_THREAD, args=(camera, expectedPos, targetID, filename))
+        Log2(2,"Starting thread")
         t.start()
+        Log2(2,"Thread has been started; about to call join on thread")
         
         t.join(600)  #if it takes more than 10 minutes, stop and disable this feature so normal logic can run instead
         Log2(2,"Checking thread result:")
@@ -4438,18 +4491,26 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         t.join()    #final join() to make sure fully done
         Log2(2,"Final join returned as expected")
         
-        return AstrometryResult
+        Log2(0,"Msg: " + AstrometryResult[4])
+        Log2(0,"Status: %d" % AstrometryResult[5])
+        vState.ppState[camera].MaxSolveTime = AstrometryMaxSolveTime
+        if AstrometryResult[0] and camera == 1:
+            vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
+
+        return (AstrometryResult[0],AstrometryResult[1],AstrometryResult[2],AstrometryResult[3])
     except:
-        Error("UNHANDLED EXCEPTION WHEN TRYING TO RUN THREAD")
+        Error("UNHANDLED EXCEPTION WHEN TRYING TO RUN THREAD for Astrometry.net")
         niceLogExceptionInfo()
         return (False, 0., 0.,0.) 
         
-def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, trace, vState ):
+#..................................................................................        
+def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename ):
     #WARNING: sometimes Astrometry.net can HANG indefinitely, so call it in a thread that we can abandon if it takes too long.
     #Otherwise, the entire program is held here, including not parking the scope at all.
     
     #see documentation of argument list and return values in CustomPinpointSolve()
     global AstrometryResult
+    global AstrometryMaxSolveTime
 
     start = time.time()
     if camera == 0:
@@ -4457,34 +4518,19 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
     else:
         sCamera = "*Wide*"	#used with Log2Summary
 
-    #2017.07.03: before calling Astrometry.net, first use PinPoint to COUNT the number of stars
-    # present in the image. If the number is too low, don't bother trying Astrometry.net (probably bad weather)
-    numImageStars = CountImageStars( camera, expectedPos, targetID, filename, trace, vState )
-        
-    Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
-    if numImageStars < 10:  #ADJUST THIS
-        Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
-        Log2(2, "vvvvvvvvvv")
-        Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
-        Log2(2, "^^^^^^^^^^")
-        AstrometryResult = (False, 0., 0.,0.)
-        return
-    #end of Pinpoint addition feature
-
     try:
         #There is a chance that this might throw an exception sometimes, such as if
         #there is a problem with the internet or the remote web site
         Log2(2,"About to create Astrometry.net Client")
         client = Client()
-#NEED TO PUT THREAD LOGIC INSIDE an_client class
 
-        Log2(2,"About to log in; this is the ID string assigned to me")
+        Log2(5,"About to log in; this is the ID string assigned to me")
         client.login('byntncnnbevtsyis')
 
-        Log2(2,"About to upload file: %s" % filename)
+        Log2(5,"About to upload file: %s" % filename)
         client.upload(filename)
-        timeout = vState.ppState[camera].MaxSolveTime
-        Log2(2,"After uploading file, waiting up to %d seconds for completion" % timeout)
+        timeout = AstrometryMaxSolveTime    #vState.ppState[camera].MaxSolveTime
+        Log2(5,"After uploading file, waiting up to %d seconds for completion" % timeout)
         client.wait_for_completion(timeout)	    #wait, timeout if too long
 
     except:
@@ -4493,14 +4539,14 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
         Log2(2, "> failed <             (EXCEPTION calling Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
         Log2(2, "Suggestion: try opening web site nova.astrometry.net to see if it is currently working." )
-        Log2(2, "If not working, change cmd file to:  Set_Astrometry.net=0   to disable for now")
+        Log2(2, "If web site NOT working, change cmd file to:  Set_Astrometry.net=0   to disable for now")
         #NOTE: I am not deleting the Client object here, just in case it caused this exception
-        AstrometryResult = (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.,"1008: Exception calling Astrometry.net",1008)
         return
 
     status = client.solved_valid
     end = time.time()
-    Log2(2, "Astrometry.net took: " + str(round(end-start,2)) + " seconds.")
+    Log2(5, "Astrometry.net took: " + str(round(end-start,2)) + " seconds.")
     if not status:
         status = client.status_code
         #   1001 = timeout(1)
@@ -4508,32 +4554,42 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
         #   1003 = the wait function called before anything was uploaded
         #   1004 = Astrometry.net returned result of 'faiure', it could not solve the image (this can happen if image is blank)
         #   1005 = Astrometry.net returned unreasonable declination value (too far south, < -30 degrees)
-        #the next error value is tested for later
+        #the next error values are tested for later (or above)
         #   1006 = Astrometry.net returned coord unreasonably far from expected location
+        #   1007 = ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats after calling Astrometry.net
+        #   1008 = Exception calling Astrometry.net
 
         msg = "N/A"
         if status == 1001:
             msg = "1001: Timeout(1) occurred"
-            vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
+            AstrometryMaxSolveTime += 30
+            #vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
         if status == 1002:
             msg = "1002: Timeout(2) occurred"
-            vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
+            AstrometryMaxSolveTime += 30
+            #vState.ppState[camera].MaxSolveTime += 30   #bump this by 30 seconds each time we timeout, in case Astrometry.net is having a slow night
         if status == 1003:
             msg = "1003: Wait function called before upload"
         if status == 1004:
             msg = "1004: Astrometry.net unable to solve image (maybe blank?)"
         if status == 1005:
-            msg = "1004: Astrometry.net returned unreasonable result, too far south (too few stars?)"
+            msg = "1005: Astrometry.net returned unreasonable result, too far south (too few stars?)"
         #add more here in the future
-        Log2(0,"Astronmetry.net Result: FAILED, status = %s" % msg)
+        Log2(5,"Astronmetry.net Result: FAILED, status = %s" % msg)
         Log2(2, "vvvvvvvvvv")
         Log2(2, "> failed <             (using Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
         Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
 
         del client
-        AstrometryResult = (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.,"Failed, status: " + msg,status)
         return
+#0. do not pass vState to thread; it has lots of COM objects embedded init        
+#1. return tuple: status
+#2. call star count outside of thread first
+#3. pass MaxSolveTime outside of vState
+#4. pass pinpoint_successive_wide_failures out of vState
+#5. consider whether using Log2, Log2Summary calls here could be a problem
 
     #It appears to have worked
     Log2(2,"Astrometry.net results returned; successful")
@@ -4541,9 +4597,10 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
         solvedRA = float(client.solved_RA) / 15      #convert degrees into hours: 360/24 = 15
         solvedDec = float(client.solved_Dec)
     except:
-        Log2(0,"ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats")
+        Log2(5,"ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats")
+        msg = "1007: ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats after calling Astrometry.net"
         del client
-        AstrometryResult = (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.,msg,1007)
         return
 
     diffRA = solvedRA - expectedPos.dRA_J2000()
@@ -4551,21 +4608,7 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
     DiffRAdeg = diffRA * 15 * cosd(expectedPos.dDec_J2000())   #convert RA diff into degrees, adjusted for declination
     delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
 
-    if delta <= 90:
-        if camera == 1:
-            vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
-
-        if camera == 0:
-            Log2(1,"***narrow****")
-        else:
-            Log2(1,"****WIDE*****")
-        Log2(1,"** SOLVED! **     (%5.2f sec)  Astrometry.net" % (end-start))
-        Log2(1,"*************")
-        Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
-
-    Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
-
-    if delta > 90:
+    if delta > 90.:
         #There is no way this is a valid result ( >90 arcminutes); it is too far away
         msg = "1006: Astrometry.net returned unreasonable result, TOO FAR AWAY FROM EXPECTED LOCATION (too few stars?)"
         Log2(0,"Astronmetry.net Result: FAILED, status = %s" % msg)
@@ -4575,8 +4618,21 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
         Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
 
         del client
-        AstrometryResult = (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.,msg,1006)
         return
+
+    #delta <= 90:
+    #if camera == 1:
+    #    vState.pinpoint_successive_wide_failures = 0    #reset count whenever we have a Wide success
+    if camera == 0:
+        Log2(1,"***narrow****")
+    else:
+        Log2(1,"****WIDE*****")
+    Log2(1,"** SOLVED! **     (%5.2f sec)  Astrometry.net" % (end-start))
+    Log2(1,"*************")
+    Log2(2,"Soln J2000  RA=%s Dec=%s" % (UTIL.HoursToHMS(solvedRA,":",":","",1),DegreesToDMS(solvedDec)))
+
+    Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
 
 
     Log2Summary(1,"AN " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
@@ -4585,7 +4641,7 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, tra
 
     del client
 
-    AstrometryResult = (True, solvedRA, solvedDec, delta)     #success
+    AstrometryResult = (True, solvedRA, solvedDec, delta,"Success",0)     #success
     return
 
 #--------------------------------------------------------------------------------------------------------
@@ -6150,6 +6206,8 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     #record the location we intend to end at
     vState.gotoPosition = desiredScopePos
     vState.gotoPosition.isValid = False     #disable this for now so guiding during Narrow PP doesn't encounter this
+    vState.gotoPosition.posName = name
+    Log2(4,"vState.gotoPosition.isValid set to FALSE")
 
     vState.goto_count += 1
     StopGuiding(vState) #make sure guider is not running (this call does nothing if guider not currently running)
@@ -6176,11 +6234,16 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     #******************************************************
     # *** MOVE THE MOUNT to desired location **************
     #******************************************************
-    Log2(1,"Slewing to: " + name)
+    if name != desiredScopePos.posName:
+        Log2(1,"Slewing to: " + name + " / " + desiredScopePos.posName)
+    else:
+        Log2(1,"Slewing to: " + name)
     dRA_JNow_destination, dDec_JNow_destination = desiredScopePos.getJNowDecimal()
+    dRA_J2000_destination, dDec_J2000_destination = desiredScopePos.getJ2000Decimal()
 
-    Log2(3,"JNow RA=%s  Dec=%s  Name=%s" % (vState.UTIL.HoursToHMS(dRA_JNow_destination,":",":","",1), DegreesToDMS(dDec_JNow_destination),desiredScopePos.posName))
-    Log2(3,"Decimal JNow RA=%6.3f  Dec=%6.3f" % (dRA_JNow_destination, dDec_JNow_destination))
+    Log2(3,"J2000 RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_J2000_destination,":",":","",1), DegreesToDMS(dDec_J2000_destination)))
+    Log2(3,"JNow  RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_JNow_destination, ":",":","",1), DegreesToDMS(dDec_JNow_destination) ))
+    #Log2(3,"Decimal JNow RA=%6.3f  Dec=%6.3f" % (dRA_JNow_destination, dDec_JNow_destination))
     Log2(4,"desiredScopePos.dump():")
     Log2(4,desiredScopePos.dump())
     #print dRA_JNow_destination, dDec_JNow_destination
@@ -6229,12 +6292,11 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
 
 
     slewTime = time.time() - started
-    #Log2(2,"Took %d seconds to complete this slew" % (slewTime))
-    Log2(2,"Took %d seconds to complete this slew; pier side now=%d/%d" % (slewTime,vState.MOUNT.SideOfPier,SideOfSky(vState)))
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
     if HA > 12: HA -= 24
     if HA < -12: HA += 24
-    Log2(2,"Hour angle = %5.2f" % (HA))
+    Log2(2,"Took %d seconds to complete this slew; pier side now=%d/%d; Hour angle = %5.2f" % (slewTime,vState.MOUNT.SideOfPier,SideOfSky(vState),HA))
+    #Log2(2,"Hour angle = %5.2f" % (HA))
 
     afterScopePos = Position()     #store position of scope before movement
     if runMode == 1 or runMode == 2:
@@ -6347,6 +6409,8 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
 
     #(this is used to detect if we drift too far from desired location during (poor) guiding)
     vState.gotoPosition.isValid = True     #enable this position if we start guiding next
+    Log2(4,"vState.gotoPosition.isValid set to TRUE")
+    Log2(5,"vState.gotoPosition = " + vState.gotoPosition.dump() )
 
     return False #OK
 
@@ -6593,7 +6657,7 @@ def WriteRetryFile(copyList,index):
 def ExecuteList( theList ):
     Log2(0,"  ")
     Log2(0,"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    Log2(0,"~~~~~~~~~~ACTUAL EXECUTION BEGINS (Exec4.py)~~~")
+    Log2(0,"~~~~~~~~~~ACTUAL EXECUTION BEGINS (Exec5.py)~~~")
     Log2(0,"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     Log2Summary(0,"***BEGIN SCRIPT EXECUTION HERE***")
 
@@ -6615,6 +6679,7 @@ def ExecuteList( theList ):
     for line in theList:
       Log2Summary(0,"Command: " + line)
       WriteRetryFile(copyList,index)    #write out the remaining steps in case we halt and want to restart from here
+      state.gotoPosition.isValid = False    #this only set True when GOTO executed as part of command, and then only for duration of that command
       Process( line, state)
       index += 1
 
@@ -6624,7 +6689,7 @@ def ExecuteList( theList ):
     except:
         pass    #OK if we never created it
 
-    Log2(0,"~~~~~~~~~~Normal Execution Ends (Exec4.py)~~~")
+    Log2(0,"~~~~~~~~~~Normal Execution Ends (Exec5.py)~~~")
     print "!!! DONE"
 
 #--------------------------------------------------------------------------------------------------------
@@ -6740,7 +6805,7 @@ def Process( Line, vState ):
         #("SET_SUBFRAME",      setSubFrame),
         #("SET_FULLFRAME",     setFullFrame),
         ("SET_DRIFTTHRESHOLD",    setDriftThreshold),
-		("SET_ASTROMETRY.NET",	setAstrometryNet),		#New feature for Exec4.py
+		("SET_ASTROMETRY.NET",	setAstrometryNet),		#New feature for Exec5.py
         ("PP",                setPP)
         ]
 
@@ -6784,7 +6849,7 @@ def Process( Line, vState ):
             if cmdField == upCmd:
                 #we found the specified command to get its impl function to call
                 Log2(0," ")
-                Log2(0,"(Exec4.py)*** Command: %s" % (Line))
+                Log2(0,"(Exec5.py)*** Command: %s" % (Line))
                 Log2(1,"Filter = %d" % vState.CAMERA.Filter)
 
                 tup = tuple(Line.split(','))
@@ -7132,7 +7197,7 @@ def execWaitForDark(t,vState):
         Error("Called WaitForDark() with positive altitude; must use negative altitude for sun below horizon")
 	desiredAlt = -desiredAlt	#try to fix it
 
-    Log2(0,"Wait for sun to reach below %f5.2 degrees" % desiredAlt)
+    Log2(0,"Wait for sun to reach below %5.2f degrees" % desiredAlt)
     while True:
 
        #what is sun's current altitude?
@@ -12481,12 +12546,12 @@ def implExp_LightExposures(dic,vState):
         vState.CAMERA.StartY = tupc[1]
         vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
         vState.CAMERA.NumY = tupc[3]
-        Log2(0,"Cropping settings:")
-        Log2(0,"   bin = %d" % dic["bin"])
-        Log2(0,"   StartX = %d" % tupc[0])
-        Log2(0,"   StartY = %d" % tupc[1])
-        Log2(0,"   NumX = %d" % tupc[2])
-        Log2(0,"   NumY = %d" % tupc[3])
+        Log2(4,"Cropping settings:")
+        Log2(4,"   bin = %d" % dic["bin"])
+        Log2(4,"   StartX = %d" % tupc[0])
+        Log2(4,"   StartY = %d" % tupc[1])
+        Log2(4,"   NumX = %d" % tupc[2])
+        Log2(4,"   NumY = %d" % tupc[3])
    else:
         vState.CAMERA.BinX = 1  #make sure no rounding for full frame
         vState.CAMERA.BinY = 1
@@ -12997,7 +13062,7 @@ try:
             script = RELOADFILE
 
     elif len(sys.argv) != 2:
-        print "Usage:  Exec4.py  cmdfilename.txt"
+        print "Usage:  Exec5.py  cmdfilename.txt"
         print "  Before running this, should run Prepare Observation script (ObsPrep4.py)"
     else:
         okToRun = True

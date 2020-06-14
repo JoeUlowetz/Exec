@@ -93,6 +93,14 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #   Option 2: store last good focus, pos1 = -13*(temp1-temp0) + pos0
 # Do NOT use prgm startup pos/temp after 1st focus; it will be off; not equalized yet
 
+#--------------
+#Pier flip logic change (2017.02.18)
+#   MeridianCross   execMeridianFlip
+#   implExp_LightExposures  ->  MeridianCross       waits 0
+#   MeridianSafety      waits 0.2 hours
+#   TestForMeridianLimit
+#   SideOfSky
+
 
 #Enhancement idea: set flag so that when a time-limited step is executing, it will stop
 # exactly at the specified time, instead of waiting for the end of the current exposure/sequence
@@ -350,7 +358,8 @@ class ArgumentError(Exception):
 #--------------------------------
 class cState:
     def Reset(self):
-        self.MeridianSafety = 0.2     #how far (decimal hours) past meridian until force end step or flip
+        self.MeridianSafety = 0.3     #interrupt current exposure if this far past meridian
+        self.MeridianPast = 0.2       #do not start new exposure if this far past meridian
         self.guide         = 0        #0=no, 1=yes for guiding during exposures
         self.GuidingSettleThreshold = 0.4
         self.GuidingSettleTime      = 120
@@ -4108,7 +4117,14 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
             LogBase("-----------------------------------------------------------------------------",MOVEMENT_LOG)
 
             #do the actual Sync command after logging the 'before' coords'
-            vState.MOUNT.SyncToCoordinates(solvedPos.dRA_JNow(),solvedPos.dDec_JNow())
+            #2017.02.22 JU: protect against mount being given impossible coordinates (this can happen from bad PP or Astrometry.net solve)
+            try:
+                vState.MOUNT.SyncToCoordinates(solvedPos.dRA_JNow(),solvedPos.dDec_JNow())
+            except:
+                niceLogExceptionInfo()
+                Error("Exception thrown for SyncToCoordinates: mount given impossible coords to sync to!")
+                SafetyPark(vState)
+                raise SoundAlarmError,'Halting program'
 
         else:
             Log2(3,"Did not solve")
@@ -4293,7 +4309,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2(2,"About to create Astrometry.net Client")
         client = Client()
 
-        Log2(2,"About to log in")
+        Log2(2,"About to log in; this is the ID string assigned to me")
         client.login('byntncnnbevtsyis')
 
         Log2(2,"About to upload file: %s" % filename)
@@ -4318,6 +4334,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         #   1002 = timeout(2)
         #   1003 = the wait function called before anything was uploaded
         #   1004 = Astrometry.net returned result of 'faiure', it could not solve the image (this can happen if image is blank)
+        #   1005 = Astrometry.net returned unreasonable declination value (too far south, < -30 degrees)
 
         msg = "N/A"
         if status == 1001:
@@ -4330,6 +4347,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
             msg = "1003: Wait function called before upload"
         if status == 1004:
             msg = "1004: Astrometry.net unable to solve image (maybe blank?)"
+        if status == 1005:
+            msg = "1004: Astrometry.net returned unreasonable result, too far south (too few stars?)"
         #add more here in the future
         Log2(0,"Astronmetry.net Result: FAILED, status = %s" % msg)
         Log2(2, "vvvvvvvvvv")
@@ -5569,7 +5588,7 @@ def MeridianCross(vState):
     #called at start of a step, or in the repeat loop between exposures
     #tests against crossing the meridan
     #Return True = meridian reached; must stop current step or reposition
-    return TestForMeridianLimit(0,vState)
+    return TestForMeridianLimit(vState.MeridianPast,1,vState)
 
 #--------------------------------
 def MeridianSafety(vState):
@@ -5578,27 +5597,28 @@ def MeridianSafety(vState):
     #tests if past meridian by safety limit (approx 0.5 hours); this gives
     # current exposure/sequence a chance to complete without being interrupted.
     #Return True = meridian safety limit; must stop exposure, must stop current step or reposition
-    return TestForMeridianLimit(vState.MeridianSafety,vState)
+    return TestForMeridianLimit(vState.MeridianSafety,0,vState)
 
 
 #--------------------------------------------------------------------------------------------------------
-def TestForMeridianLimit(threshold,vState):
+def TestForMeridianLimit(threshold,verbose,vState):
     #*-code complete-*#
     #This implements MeridianCross() and MeridianSafety(); other code should NOT call this.
     #return True = meridian limit reached
-    #If threshold == 0, this is called by MeridianCross and is not called frequently,
+    #If verbose == 1, this is called by MeridianCross and is not called frequently,
     #  so output VERBOSE messages. Else no messages (called from imaging delay loop)
 
     if runMode != 1:
-        if threshold == 0:
+        if verbose == 1:
             #only log this if called from "MeridianCross"
             Log2(2,"MeridianCross: test disabled")
         return False    #disabled for simulator or testing
 
     if SkipTestForMeridianLimit:
-        if threshold == 0:
+        if verbose == 1:
             #only log this if called from "MeridianCross"
             Log2(2,"MeridianCross: OTA pointing west so skip test")
+#IS THIS LOG MSG CORRECT? THERE IS NO TEST OF SIDE-OF-SKY            
         return False    #we cannot have a pier flip situation during this exposure because already pointing west
                     # regardless of any changes in SideOfPier  (well, theoretically, if tracking an object
                     # underneath the pole, that would be a valid case for a pier flip, but I don't plan to
@@ -5634,13 +5654,15 @@ def TestForMeridianLimit(threshold,vState):
             Log2(4,"Target RA:     " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
             Log2(4,"Target Dec:   " + DegreesToDMS( vState.MOUNT.Declination))
             Log2(4,"Hour angle:    " + str(UTIL.HoursToHM( HA )))
-            Log2(4,"Test threshold:" + str(threshold) + ", HA is larger than this")
+            Log2(4,"Test threshold:" + str(threshold) + ", HA is larger than this: " + str(HA))
             Log2(4,"Altitude:      " + str(round(vState.MOUNT.Altitude,2)))
             Log2(4,"Azimuth:       " + str(round(vState.MOUNT.Azimuth,2)))
+            Log2(4,"Current pier side=%d/%d" % (vState.MOUNT.SideOfPier,SideOfSky(vState)))
+
             Error("******************************")
             Error("***   PIER FLIP REQUIRED   ***")
             Error("******************************")
-            Log2Summary(0,"PIER FLIP REQUIRED")
+            Log2Summary(0,"PIER FLIP REQUIRED, HA=" + UTIL.HoursToHMS( HA,":",":","",1))
 
             return True    #we have crossed the meridian!!
     if threshold == 0:
@@ -5784,7 +5806,7 @@ def execMeridianFlip(desiredPos,ID,vState,bImagerSolve):
        DiffRAdeg = DiffRA * 15 * cosd(toDec)   #convert RA diff into degrees, adjusted for declination
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
-           Log2(2,"Mount still moving: %5.2f arcmin   (count=%d, extend=%d) pier=%d" % (delta,count,maxExtend,vState.MOUNT.SideOfPier))
+           Log2(2,"Mount still moving: %5.2f arcmin   (count=%d, extend=%d) pier=%d/%d" % (delta,count,maxExtend,vState.MOUNT.SideOfPier,SideOfSky(vState)))
            if maxExtend > 0:
                maxExtend -= 1
                count = 10       #reset count if seeing any motion (sometimes we don't but it is still moving)
@@ -5906,7 +5928,7 @@ def PredictSideOfPier(pos, vState):
     if diff < 0:
         if runMode != 1:
             return (1,True)
-        if vState.MOUNT.SideOfPier == 1:  #on west side of pier?
+        if SideOfSky(vState) == 1:  #on west side of pier?  #2017.02.18 JU: changed to using SideOfSky()
             #we are already on west side of pier looking east,
             # and target position is east of meridian, so OK
             return (1,False)
@@ -6013,7 +6035,7 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
 
     slewTime = time.time() - started
     #Log2(2,"Took %d seconds to complete this slew" % (slewTime))
-    Log2(2,"Took %d seconds to complete this slew; pier side now=%d" % (slewTime,vState.MOUNT.SideOfPier))
+    Log2(2,"Took %d seconds to complete this slew; pier side now=%d/%d" % (slewTime,vState.MOUNT.SideOfPier,SideOfSky(vState)))
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
     if HA > 12: HA -= 24
     if HA < -12: HA += 24
@@ -11410,7 +11432,7 @@ def implImagerExposure(index,dic,vState):
         sFilter = dic["filter"]
         iFilter = filterToInt(sFilter)
         #vState.CAMERA.Filter = iFilter     #NOT NEEDED if specified in Expose() function below; save time skipping this.
-        Log2(1,"Set filter wheel to position: %s -- %d, pier side=%d " % (sFilter,iFilter,vState.MOUNT.SideOfPier))
+        Log2(1,"Set filter wheel to position: %s -- %d, pier side=%d/%d" % (sFilter,iFilter,vState.MOUNT.SideOfPier,SideOfSky(vState)))
 
 
         Log2(4,"@@@ Filter in use before CAMERA.Expose: %d, filter specified = %d/%s" % (vState.CAMERA.Filter,iFilter,sFilter) )

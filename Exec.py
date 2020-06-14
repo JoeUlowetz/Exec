@@ -162,7 +162,7 @@ Master_Database = "C:/fits_script/Master_db.db"
 #2019.10.19 JU: added CoolerOn command, and added to current script; I apparently forgot to turn cooler on, or I turned it off???
 #2019.10.24 JU: Why do I call SettleGuiding() [lines ~12168, ~12245] before each exposure? This takes extra time from time series. Make optional???
 #               (This was introduced in 2017 in version Exec5.py) Note: for individual exposures, settle only happens if exposures > 150 sec.
-
+#2020.05.16 JU: Changed Weathershield threshold for cloudy sky from > -10 to now > -8
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -3142,6 +3142,10 @@ def StartGuiding(objectName, vState):
 def SettleGuiding(vState):
    #return False if OK, True if problem
    # wait until guiding if better than configured offset (or waited too long)
+   if vState.guide == 0:
+     #guider disabled, nothing to check
+     Log2(2,"Guider disabled so nothing to check")
+     return False
 
    if not vState.CAMERA.GuiderRunning:
      Log2(0,"PROBLEM: Guider not running when SettleGuiding() called!")
@@ -7188,7 +7192,7 @@ def Process( Line, vState ):
         ("Narrow_J2000_EndTime_Single",       exec_Narrow_J2000_EndTime_Single,    1,     1),
 
         ("Narrow_Stationary_Count_Sequence",  exec_Narrow_Stationary_Count_Sequence, 0,     1),
-        ("Narrow_Stationary_Count_Single",    exec_Narrow_Stationary_Count_Single,   0,     1),
+        ("Narrow_Stationary_Count_Single",    exec_Narrow_Stationary_Count_Single,   0,     0),
         ("Narrow_Stationary_EndTime_Sequence",exec_Narrow_Stationary_EndTime_Sequence, 0,     1),
         ("Narrow_Stationary_EndTime_Single",  exec_Narrow_Stationary_EndTime_Single,  0,     1),
 #Cropped:
@@ -7208,7 +7212,7 @@ def Process( Line, vState ):
         ("Cropped_J2000_EndTime_Single",       exec_Cropped_J2000_EndTime_Single,    1,     1),
 
         ("Cropped_Stationary_Count_Sequence",  exec_Cropped_Stationary_Count_Sequence,  0,     1),
-        ("Cropped_Stationary_Count_Single",    exec_Cropped_Stationary_Count_Single,    0,     1),
+        ("Cropped_Stationary_Count_Single",    exec_Cropped_Stationary_Count_Single,    0,     0),
         ("Cropped_Stationary_EndTime_Sequence",exec_Cropped_Stationary_EndTime_Sequence,0,     1),
         ("Cropped_Stationary_EndTime_Single",  exec_Cropped_Stationary_EndTime_Single,  0,     1)
 
@@ -7879,6 +7883,7 @@ def execFlats(t,vState):
     return implFlat(dic,vState)
 
 #--------------------------------
+WeathershieldThreshold = -8.    #sky temp difference must be this low or lower, otherwise too cloudy to image. (was -10.)
 def execWait4Clear1(vState):
     result = GetWeathershieldInfo()
     firstPark = True
@@ -7887,14 +7892,16 @@ def execWait4Clear1(vState):
             Log2(0,"Wait4Clear command stopped because sun is too high")
             return (0,)
         Log2(2,"Weathershield reports: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
-        if result[3] < -10.:
+        if result[3] < WeathershieldThreshold:
             #Log2(0,"Wait4Clear thinks it is clear")
             Log2(2,"CLEAR: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
             return (0,)
         if firstPark:
             SafetyPark( vState )
             firstPark = False
-        Log2(2,"*Cloudy*: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
+        msg = "*Cloudy*: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3])
+        Log2(2,msg)
+        Log2Summary(1,msg)
         #Log2(2,"It appears to be cloudy currently. Wait for it to clear up.")
         #Log2(3,"To disable this feature, edit C:/fits_script/UseWeathershield.txt")
         execUseful5MinuteDelay(vState)

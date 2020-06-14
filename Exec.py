@@ -1,4 +1,8 @@
-# Exec5.py		Uses Astrometry.net for solving when PP unable to solve
+# Exec7D.py		Uses ephem for coord translation; Uses Astrometry.net for solving when PP unable to solve
+
+#Remove calls for:
+#   PrecessLocalToJ2000(dJNowRA, dJNowDec)
+#   PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec)
 
 #Setting for config file:   THIS ONLY APPLIES TO WIDE FIELD, ALL NARROW FIELDS STILL USE PP
 #	Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
@@ -860,140 +864,127 @@ cTypeReported = 2    #This coord was reported by the mount (may be inaccurate)
 cTypeSolved = 3      #This coord was obtained from Pinpoint solving an image
 class Position:
     def __init__(self):
-        #define Constants; used w/ field Type
-
         #declare variables used to store position, and description of the position
-        #these are all decimal values
-        self.__RAJ2000 = None
-        self.__DecJ2000 = None
-        self.__RAJNow = None
-        self.__DecJNow = None
-        self.posName = "n/a"          #Name of object this coord is for
-        self.posType = cTypeUnknown  #This is set to one of the constants above
+        #These are ephem.angle objects; value stored in both epochs
+        self.__posJ2000 = None      # this is an ephem.Angle object
+        self.__posJNow = None       #  "            "
+        self.posName = "n/a"        #Name of object this coord is for
+        self.posType = cTypeUnknown #This is set to one of the constants above  (FEATURE NEVER REALLY USED)
         self.isValid = False
+        self.orig_epoch = None      #original epoch; this may be set to ephem.J2000 or ephem.now() (which varies)
 
     def dump(self):  #returns long string that can be printed
-       global UTIL
        ret = "\n"
        if not self.isValid:
           ret += "[NOT VALID] "
+       raJNow,decJNow   = getJNowString(self)
+       raJ2000,decJ2000 = getJ2000String(self)
        ret +=  "Position dump:\n"
        ret += "Name:  %s\n" % (self.posName)
-       ret += "J2000: %s  %s\n" % (UTIL.HoursToHMS(self.__RAJ2000,":",":","",1), DegreesToDMS(self.__DecJ2000))
-       ret += "JNow:  %s  %s\n" % (UTIL.HoursToHMS(self.__RAJNow,":",":","",1), DegreesToDMS(self.__DecJNow))
+       ret += "J2000: %s  %s\n" % (raJ2000, decJ2000)
+       ret += "JNow:  %s  %s\n" % (raJNow, decJNow)
        return ret
 
     def dump2(self):  #returns 2 string tuple that can be printed in a log
-       global UTIL
        ret = "\n"
        if not self.isValid:
-          #ret += "THIS OBJECT IS NOT VALID!\n"
           return ("THIS OBJECT IS NOT VALID!","THIS OBJECT IS NOT VALID!")
+       raJNow,decJNow   = getJNowString(self)
+       raJ2000,decJ2000 = getJ2000String(self)
 
        # Catalog Lookup    RA--JNow--Dec       RA--J2000--Dec  Name: ssssssss
        #                 00:00:00 +00:00:00  00:00:00 +00:00:00
        line0 = " Cat Lkp    RA--JNow--Dec       RA--J2000--Dec  Name:"
-       line1 = "         %s %s  %s %s %s" % (UTIL.HoursToHMS(self.__RAJNow,":",":","",1), DegreesToDMS(self.__DecJNow), UTIL.HoursToHMS(self.__RAJ2000,":",":","",1), DegreesToDMS(self.__DecJ2000), self.posName)
+       line1 = " %s %s  %s %s    %s" % (raJNow, decJNow, raJ2000, decJ2000, self.posName)
        return (line0,line1)
 
     def dump3(self):  #returns strings that can be printed in target log
-       global UTIL
        ret = "\n"
        if not self.isValid:
-          #ret += "THIS OBJECT IS NOT VALID!\n"
           return "THIS OBJECT IS NOT VALID!"
+       raJNow,decJNow   = getJNowString(self)
+       raJ2000,decJ2000 = getJ2000String(self)
 
        # Catalog Lookup    RA--JNow--Dec       RA--J2000--Dec    Name:     ssssssss
        #                 00:00:00 +00:00:00  00:00:00 +00:00:00
        #line0 = " RA--JNow--Dec       RA--J2000--Dec    Name:     %s" % (self.posName)
-       line1 = " %s %s  %s %s    %s" % (UTIL.HoursToHMS(self.__RAJNow,":",":","",1), DegreesToDMS(self.__DecJNow), UTIL.HoursToHMS(self.__RAJ2000,":",":","",1), DegreesToDMS(self.__DecJ2000), self.posName)
+       line1 = " %s %s  %s %s    %s" % (raJNow, decJNow, raJ2000, decJ2000, self.posName)
        return line1
 
-    def setJ2000Decimal(self,RAJ2000,DecJ2000,name=None,ptype=None): ##Decimal coords input
-        self.__RAJ2000 = RAJ2000
-        self.__DecJ2000 = DecJ2000
-        self.__RAJNow, self.__DecJNow = PrecessJ2000ToLocal(RAJ2000,DecJ2000)
+    def setDecimal(self,dhRA,ddDec,epoch,name=None,ptype=None):
+        #Input coords are decimal hours, decimal degrees
+        #Ex. 12.51234,-23.97654
+        #epoch = ephem.J2000 or ephem.now()  [if not ephem.J2000 it ASSUMES ephem.now(); don't use any other epochs]
+        #Future enhancement: support for 'B1900', 'B1950'
+        self.orig_epoch = epoch
+        if epoch == ephem.J2000:
+            self.__posJ2000 = ephem.Equatorial(hours2rad(dhRA),deg2rad(ddDec),epoch=ephem.J2000)
+            self.__posJNow  = ephem.Equatorial(self.__posJ2000,epoch=ephem.now())
+        else:
+            self.__posJNow = ephem.Equatorial(hours2rad(dhRA),deg2rad(ddDec),epoch=ephem.now())
+            self.__posJ2000 = ephem.Equatorial(self.__posJNow,epoch=ephem.J2000)
         if name == None:    self.posName = None
         else:               self.posName = name
         if ptype == None:   self.posType = cTypeUnknown
         else:               self.posType = ptype
         self.isValid = True
 
-    def setJ2000String(self,RAJ2000, DecJ2000,name=None,ptype=None):
-        global UTIL         #declare this for use below
-        decRA = UTIL.HMSToHours(RAJ2000)
-        decDec = UTIL.DMSToDegrees(DecJ2000)
-        self.setJ2000Decimal(decRA,decDec,name,ptype)
-
-    def setJNowDecimal(self,RAJNow,DecJNow,name=None,ptype=None):
-        self.__RAJNow = RAJNow
-        self.__DecJNow = DecJNow
-        self.__RAJ2000, self.__DecJ2000 = PrecessLocalToJ2000(RAJNow,DecJNow)
+    def setString(self,shRA,sdDec,epoch,name=None,ptype=None):
+        #Input coords are strings: RA is hours:minutes:seconds, Dec is degrees:minutes:seconds
+        #Ex: '12:34:56','-89:11:22'
+        #epoch = ephem.J2000 or ephem.now()  [if not ephem.J2000 it ASSUMES ephem.now(); don't use any other epochs]
+        self.orig_epoch = epoch
+        if epoch == ephem.J2000:
+            self.__posJ2000 = ephem.Equatorial(shRA,sdDec,epoch=ephem.J2000)
+            self.__posJNow  = ephem.Equatorial(self.__posJ2000,epoch=ephem.now())
+        else:
+            self.__posJNow = ephem.Equatorial(shRA,sdDec,epoch=ephem.now())
+            self.__posJ2000 = ephem.Equatorial(self.__posJNow,epoch=ephem.J2000)
         if name == None:    self.posName = None
         else:               self.posName = name
         if ptype == None:   self.posType = cTypeUnknown
         else:               self.posType = ptype
         self.isValid = True
 
-    def setJNowString(self,RAJ2000, DecJ2000,name=None,ptype=None):
-        global UTIL         #declare this for use below
-        decRA = UTIL.HMSToHours(RAJ2000)
-        decDec = UTIL.DMSToDegrees(DecJ2000)
-        self.setJNowDecimal(decRA,decDec,name,ptype)
+    #Input formats for coords below:
+    #   Decimal hours [0.0 ... 23.999)    dhRA***       dhRAJ2000 or dhRAJNow
+    #   Decimal degrees (-90.0 ... +90.0) ddDec***      ddDecJ2000 or ddDecJNow
+    #   string hours (ex '12:34:56')      shRa***       shRAJ2000 or shRAJNow
+    #   string degrees (ex '-89:12:34')   sdDec***      sdDecJ2000 or sdDecJNow
 
-    def getJ2000Decimal(self):
-        return(self.__RAJ2000, self.__DecJ2000)
+    def setJ2000Decimal(self,dhRAJ2000,ddDecJ2000,name=None,ptype=None): ##Decimal coords input
+        setDecimal(self,dhRAJ2000,ddDecJ2000,ephem.J2000,name,ptype)
 
-    def getJNowDecimal(self):
-        return(self.__RAJNow, self.__DecJNow)
+    def setJ2000String(self,shRAJ2000,sdDecJ2000,name=None,ptype=None):
+        setString(self,shRAJ2000,sdDecJ2000,ephem.J2000,name,ptype)
 
-    def getJ2000String(self):
-        global UTIL
-        stringRA = UTIL.HoursToHMS(self.__RAJ2000,":",":","",1)
-        stringDec = DegreesToDMS(self.__DecJ2000)
-        return(stringRA,stringDec)
+    def setJNowDecimal(self,dhRAJNow,ddDecJNow,name=None,ptype=None):
+        setDecimal(self,dhRAJNow,ddDecJNow,ephem.now(),name,ptype)
 
-    def getJNowString(self):
-        global UTIL
-        stringRA = UTIL.HoursToHMS(self.__RAJNow,":",":","",1)
-        stringDec = DegreesToDMS(self.__DecJNow)
-        return(stringRA,stringDec)
+    def setJNowString(self,shRAJNow,sdDecJNow,name=None,ptype=None):
+        setString(self,shRAJNow,sdDecJNow,ephem.now(),name,ptype)
+
+    def getJ2000Decimal(self):  #returns decimal hours, decimal degrees, epoch J2000
+        return(rad2hours(self.__posJ2000.ra), rad2deg(self.__posJ2000.dec))
+
+    def getJNowDecimal(self):  #returns decimal hours, decimal degrees, epoch JNow
+        return(rad2hours(self.__posJNow.ra), rad2deg(self.__posJNow.dec))
+
+    def getJ2000String(self):   #returns strings in hh:mm:ss, dd:mm:ss format, epoch=J2000
+        return(Cleanup(ephem.hours(self.__posJ2000.ra)),FixDecSign(Cleanup(ephem.degrees(self.__posJ2000.dec))))
+
+    def getJNowString(self):   #returns strings in hh:mm:ss, dd:mm:ss format, epoch=J2000
+        return(Cleanup(ephem.hours(self.__posJNow.ra)),FixDecSign(Cleanup(ephem.degrees(self.__posJNow.dec))))
 
     #sometimes need these values separately
     def dRA_J2000(self):
-        return self.__RAJ2000
+        return rad2hours(self.__posJ2000.ra)
     def dDec_J2000(self):
-        return self.__DecJ2000
+        return rad2deg(self.__posJ2000.dec)
     def dRA_JNow(self):
-        return self.__RAJNow
+        return rad2hours(self.__posJNow.ra)
     def dDec_JNow(self):
-        return self.__DecJNow
-
-    def addRA(self,arcmin):
-        #pass in arcminutes of desired change; this is converted to RA scaled for Dec
-        #the arcmin value can be negative to decrease RA
-        # Logic below:
-        # /60 to convert minutes to degrees
-        # /15 to convert degrees to hours of RA
-        # cos(dec) adjust for declination
-        diffHours = (arcmin / (60 * 15)) / cosd(self.__DecJ2000)
-        newHour = self.__RAJ2000 + diffHours
-        if diffHours > 0:   #addition; check to see if wrapped around 0h
-            if newHour >= 24:
-                newHour -= 24
-        else:
-            if newHour < 0 :
-                newHour += 24
-        self.setJ2000Decimal(newHour,self.__DecJ2000)
-
-    def addDec(self,arcmin):
-        #pass in arcminutes of desired change;
-        #the arcmin value can be negative to decrease Dec
-        diffDeg = (arcmin / 60)
-        newDeg = self.__DecJ2000 + diffDeg
-        #Note: no need to check wrapping for Dec (don't plan to move north of north pole)
-        self.setJ2000Decimal(self.__RAJ2000,newDeg)
-
+        return rad2deg(self.__posJNow.dec)
 
     #also like logging feature for values
 
@@ -1434,49 +1425,6 @@ def LogConditions(vState):
         pass
 
 #--------------------------------
-def LogCoords2000(dRA,dDec,vState,comment):    #coords are decimals in J2000 epoch
-    # 23:28:35 (J2000) R 16:50:12 D 23:36:46  (JNow) R 16:50:36 D 23:36:10
-
-    sRA_2000 = UTIL.HoursToHMS(dRA,":",":","",1)
-    sDec_2000 = DegreesToDMS(dDec)
-
-    tup = PrecessJ2000ToLocal(dRA, dDec)
-    dRA_Now = tup[0]
-    dDec_Now = tup[1]
-
-    sRA_Now = UTIL.HoursToHMS(dRA_Now,":",":","",1)
-    sDec_Now = DegreesToDMS(dDec_Now)
-    line = "(J2000) R " + sRA_2000 + " D" + sDec_2000 + "  (JNow) R" + sRA_Now + " D" + sDec_Now
-    Log2(3,line)
-
-    #log coords (and time) to dedicated file
-    #LogBase(line + "  " + comment,MOVEMENT_LOG)
-
-#--------------------------------
-def LogCoordsJNow(dRA,dDec,vState,comment):    #coords are decimals in JNow epoch
-    # 23:28:35 (J2000) R 16:50:12 D 23:36:46  (JNow) R 16:50:36 D 23:36:10
-
-    sRA_JNow = UTIL.HoursToHMS(dRA,":",":","",1)
-    sDec_JNow = DegreesToDMS(dDec)
-
-    line = "(JNow) R" + sRA_JNow + " D" + sDec_JNow
-    Log2(2,line)
-
-    #log coords (and time) to dedicated file
-    LogBase(line + "  " + comment,MOVEMENT_LOG)
-
-#--------------------------------
-def LogTopoCoords(dRA_Now,dDec_Now,dHA,vState):    #coords are decimals in JNOW epoch; includes hour angle
-    # 23:28:35 (J2000) R 16:50:12 D 23:36:46  (JNow) R 16:50:36 D 23:36:10 HA=1:06
-    # 23:28:35                                (JNow) R 16:50:36 D 23:36:10 HA=1:06
-
-    #I don't know how to reverse the precession  [actually I do reverse it somewhere; where is that?]
-
-    sRA_Now = UTIL.HoursToHMS(dRA_Now,":",":","",1)
-    sDec_Now = DegreesToDMS(dDec_Now)
-
-    sHA = UTIL.HoursToHM(dHA)
-    #Log("                               (JNow) R" + sRA_Now + " D" + sDec_Now + " HA=" + sHA)
 
 #--------------------------------
 def GetSign(nbr):   #return +1 if nbr >= 0, else return -1
@@ -3739,6 +3687,16 @@ def rad2hours(rad):
 def rad2deg(rad):
     return rad * (180./math.pi)
 
+def Cleanup(str):   #remove trailing decimal part from ephem.Angle string
+    pos = str.find('.')
+    if pos < 0:
+        return str
+    return str[0:pos]
+def FixDecSign(str):    #string is Dec string, if no sign then prepend '+' in front of it
+    if str[0] == '-' or str[0] == '+':
+        return str
+    return '+' + str
+
 #--------------------------------------------------------------------------------------------------------
 def PrecessLocalToJ2000(dJNowRA, dJNowDec):
     #Newest approach: use ephem
@@ -4851,14 +4809,14 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 
     try:
         bSolve,msg = MultiPPSolve.MultiPPSolve(pp,camera, expectedPos, vState)
-        
+
     except:
         bSolve = False
         msg = "Exception for MultiPPSolve"
         DumpPP(pp)
 
     Log2(0,msg)
-    
+
     end = time.time()
     #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     if not bSolve:
@@ -6268,7 +6226,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     line0,line1 = desiredScopePos.dump2()
     Log2(3,line0)
     Log2(3,line1)
-    
+
     #record the location we intend to end at
     vState.gotoPosition = desiredScopePos
     vState.gotoPosition.isValid = False     #disable this for now so guiding during Narrow PP doesn't encounter this
@@ -6364,7 +6322,7 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromRA = toRA    #for next check
        fromDec = toDec
 
-    Log2(2,"***we just stopped moving according to slewing flag***")
+    Log2(2,"***WHERE WE STOPPED MOVING, ACCORDING TO THE SLEWING FLAG***")
     Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
     Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
 
@@ -6411,6 +6369,12 @@ def GOTO2(desiredScopePos,vState,name=""):
     dRA_diffJ  = desiredScopePos.dRA_JNow() - afterScopePos.dRA_JNow()    #dRA_JNow_destination - vState.MOUNT.RightAscension
     dDec_diffJ = desiredScopePos.dDec_JNow() - afterScopePos.dDec_JNow()  #dDec_JNow_destination - vState.MOUNT.Declination
 
+    #SANITY CHECK: DOES OUR OBJECT REALLY HAVE SAME VALUES AS SCOPE REPORTED?
+    checkRA = afterScopePos.dRA_JNow() - vState.MOUNT.RightAscension
+    checkDec = afterScopePos.dDec_JNow() - vState.MOUNT.Declination
+    Log2(1,"Sanity check of final position: %f, %f" % (checkRA,checkDec))
+    Log2(1,"Simple diff: desired - final:   %f, %f" % (dRA_diffJ,dDec_diffJ))
+
     dRA_diff2  = desiredScopePos.dRA_J2000() - afterScopePos.dRA_J2000()    #dRA_JNow_destination - vState.MOUNT.RightAscension
     dDec_diff2 = desiredScopePos.dDec_J2000() - afterScopePos.dDec_J2000()  #dDec_JNow_destination - vState.MOUNT.Declination
 
@@ -6456,7 +6420,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(2,"***we are now about to monitor location to see if still moving***")
     Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
     Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
-        
+
     #!! Check for excessive movement after mount says it stopped
     maxExtend = 60  #max we can extend this delay if we see movement
     count = 5       #initial delay to see if movement
@@ -6488,7 +6452,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(2,"***we exited loop looking for after movement; it should be stationary***")
     Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
     Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
-       
+
     afterScopePos = Position()     #store position of scope before movement
     if runMode == 1 or runMode == 2:
         afterScopePos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination,name,cTypeReported)
@@ -6506,7 +6470,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(3,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
     Log2(3,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
     print vState.MOUNT.RightAscension,vState.MOUNT.Declination
-    
+
     return 0 #OK
 
 #=====================================================================================

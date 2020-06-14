@@ -30,12 +30,12 @@ Master_Database = "C:/fits_script/Master_db.db"
 # COM Objects documentation
 #--------------------------
 #   MaxIm.CCDCamera                 MaxImDL5 Menu: Help / Help Topics; Contents: Scripting
-#   ASCOM.GeminiTelescope.Telescope https://ascom-standards.org/Help/Developer/html/Methods_T_ASCOM_DriverAccess_Telescope.htm 
+#   ASCOM.GeminiTelescope.Telescope https://ascom-standards.org/Help/Developer/html/Methods_T_ASCOM_DriverAccess_Telescope.htm
 #                                       Look in ASCOM.DriverAccess / TelescopeClass for Properties and Methods
 #                                       Note use of CommandBlind() to directly access Gemini feature not available through ASCOM interface
 #   FocusMax.FocusControl           Astronomy Documents / FocusMax Help.pdf; see section on Scripting for FocusControl and Focuser
 #   FocusMax.Focuser                "
-#   MiniSAC.Catalog                 Call SelectObject() with the name of the object; if it returns True the equatorial 
+#   MiniSAC.Catalog                 Call SelectObject() with the name of the object; if it returns True the equatorial
 #                                       coords are in the RightAscension and Declination properties
 #   PinPoint.Plate                  Visual PinPoint, Help tab: Scripting the Engine, Plate Object
 #   DriverHelper.Util               Utility functions for formatting coordinates
@@ -149,6 +149,7 @@ Master_Database = "C:/fits_script/Master_db.db"
 #2018.04.08 JU: Changed settings for vState.MeridianSafety and vState.MeridianPast because they were too large and mount would stop first
 #2018.04.28 JU: Added focuser temperature and position setting to Summary log when reporting exposure
 #2018.09.02 JU: Adding SQLite3 features; see designs on laptop W510 in C:\Users\W510\Documents\SQLite
+#2018.12.31 JU: Exec6D: added display of SideOfSky to Log2Summary for PP solve and exposure
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -235,6 +236,8 @@ import random   #used for RandomSafeLocation()
 import sqlite3  #added 2018.09.02 JU
 
 import imaging_db   #my code that implements DB functions:  imaging_db.py
+
+import MultiPPSolve #added 2019.01.01 JU
 
 #Exec4n.py 2015.12.13    DISABLED 2018.09.02
 #import socket
@@ -647,7 +650,7 @@ class cState:
         self.SQLITE = sqlite3.connect( Observatory_Database )   #this is only accessed by script: imaging_db.py
         self.SQMASTER = sqlite3.connect( Master_Database )
         imaging_db.SqliteStartup( self.SQMASTER, 'Exec5D-startup' )    #record start of prgm in Startup table of database
-        
+
         # COM objects
         print "Connect: DriverHelper.Util"
         self.UTIL   = win32com.client.Dispatch("DriverHelper.Util")
@@ -1167,6 +1170,7 @@ def LogBase(value,filex):   #common code
     return prefix   #return prefix so it can be printed on the screen if called by Log()
 
 #--------------------------------
+
 def Log2Summary(level,value):	#summary event log (as of 2016.06.15 JU)
     #level = what level of detail to output to the screen and regular log file; level values typically 0,1,2
     # each level has one (1) additional space before log text (for indenting)
@@ -1671,16 +1675,16 @@ def LogStatus( vState ):  #write out frequent status info to special file
 
           if abs(RecentGuideY) > gGuidingYMax and RecentGuideY != -99:
               gGuidingYMax = abs(RecentGuideY)
-              
+
           imaging_db.RecordGuider(vState,True,1022)
-          
+
       else:
           #new measurement not available yet; suppress logging unless we get called
           # many times in a row
           vState.LogStatusCount += 1
           if vState.LogStatusCount < 10:
             return False     #do not log
-            
+
           #else log the old values
           flag = "o"
           bStaleData = True
@@ -1989,7 +1993,7 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
    imaging_db.RecordFocuser(vState,1004)
    elapsed_time = time.time() - start_time
    imaging_db.RecordPerformance(vState,elapsed_time,split1,split2,split3) #track how much time this is taking, to make sure it isn't too much
-   
+
    try:
       dRA = vState.MOUNT.RightAscension
       dDec = vState.MOUNT.Declination
@@ -2721,7 +2725,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
             count += 1
             LogStatus(vState)   #do NOT test guider quality here; we are not guiding!
             imaging_db.RecordGuider(vState,False,1042)
-            
+
         Log2(2,"Guider field exposure complete(2)")
         if count == 0:
             Error("The guider exposure to find a guide star returned immediately(2); did it actually take an image???")
@@ -2931,7 +2935,7 @@ def StartGuiding(objectName, vState):
                   else:
                      Log2(0,"Note: GuiderRunning also reports false.")
                      imaging_db.RecordGuider(vState,False,1044)
-                     
+
                   bProblem = True
                   ReportGuiderState(vState)
             except:
@@ -3178,7 +3182,7 @@ def StopGuiding(vState):
     ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
 
     imaging_db.RecordGuider(vState,False,1050)
-    
+
     if ret != 0:
         Error("Call to shut down guider failed")
         Error("*** EXPECT PROBLEMS TO OCCUR NOW ***")
@@ -4810,103 +4814,22 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     Log2(4,"pp.CatalogMaximumMagnitude = %f" % pp.CatalogMaximumMagnitude)
     Log2(4,"pp.MaxSolveTime= %d" % pp.MaxSolveTime)
     #using PP 2.0 may need image to be calibrated first to avoid false positives!
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    #if the next line throws an exception, I may not really have RA/Dec values provided as input
-    #It can also throw an exception in star poor fields like NGC3687 (no catalog stars in guider FOV!)
+    #Logic is located in file MultiPPSolve.py
+
     try:
-        pp.FindCatalogStars()
-        numCatalogStars = len(pp.CatalogStars)
-        Log2(2,"Number of catalog stars: %d" % numCatalogStars)
-        #if there are very few catalog stars here, and using wide image, switch catalog and try again
-        #if camera == 1 and numCatalogStars < 20:
-        chgCatalog = False
-        if pp.Catalog == 3:
-            #currently configured to use GSC catalog, should we use USNO instead?
-            if numCatalogStars < 20:
-                chgCatalog = True
-            elif numImageStars > numCatalogStars and numCatalogStars < 100:
-                chgCatalog = True
-            elif numImageStars > 15 and numCatalogStars < 100:
-                chgCatalog = True
-
-        if chgCatalog:
-            pp.Catalog = 5  #3=GSC, 5=USNO_A2.0(6GB), 8=USNO_B2.0 via Internet
-            pp.CatalogPath = r"C:\Catalog"
-            pp.CatalogMaximumMagnitude = 18
-            Log2(2,"Not enough catalog stars: %d; change to deeper catalog" % numCatalogStars)
-            pp.FindCatalogStars()
-            Log2(2,"New catalog star count: %d" % numCatalogStars)
-
-        elif camera == 0 and numCatalogStars > 1000 and vState.ppState[camera].CatalogID == 5:
-            #use a smaller catalog
-            pp.Catalog = 3  #3=GSC, 5=USNO_A2.0(6GB), 8=USNO_B2.0 via Internet
-            pp.CatalogPath = r"C:\gsc11"
-            pp.CatalogMaximumMagnitude = 16
-            pp.FindCatalogStars()
-            Log2(2,"Too many catalog stars: %d, changing to smaller catalog" % numCatalogStars)
-            numCatalogStars = len(pp.CatalogStars)
-            Log2(2,"New catalog star count: %d" % numCatalogStars)
-
-        if numImageStars > 200 and (numImageStars * 2) < numCatalogStars:
-            #we have way too many catalog stars; this can cause a timeout trying to solve
-            # so adjust the number of stars to be more reasonable.
-            #(This done with either camera now)
-            Log2(2,"Reducing catalog magnitude limit because catalog star count: %d" % numCatalogStars)
-            while (numImageStars * 2) < numCatalogStars:
-                pp.CatalogMaximumMagnitude = pp.CatalogMaximumMagnitude - 1
-                pp.FindCatalogStars()
-                numCatalogStars = len(pp.CatalogStars)
-                Log2(3,"Reduced Catalog magnitude limit to %5.2f, found %d catalog stars" % (pp.CatalogMaximumMagnitude, numCatalogStars))
-
-    except:
-        Log2(2, "> failed <                   NO CATALOG STARS!")
-        pp.WriteHistory("*** Failed to solve in PP  ***")
-        report_line = "%6.2f %5d %5d                           %5.3f %5d %5d %5d                             %6s %-14s%9s %9s" % (
-            0, len(pp.ImageStars), 0, 0, 0, 0, 0, strCamera(camera),targetID,catRAstring,catDecstring  )
-        LogBase(report_line, PINPOINT_SOLVE)
-
-        #try other catalog if guider
-        if camera == 1:
-            pp.Catalog = 5  #3=GSC, 5=USNO_A2.0(6GB), 8=USNO_B2.0 via Internet
-            pp.CatalogPath = r"C:\Catalog"
-            pp.CatalogMaximumMagnitude = 18
-            try:
-                pp.FindCatalogStars()
-            except:
-                #still doesn't work; stop
-
-                pp.DetachFITS()
-                del pp
-                return (False, 0., 0., 0.)
-        else:
-            pp.DetachFITS()
-            del pp
-            return (False, 0., 0., 0.)
-
-
-    Log2(4, "   Catalog= " + str(pp.Catalog))
-    Log2(4, "   CatalogPath= " + pp.CatalogPath)
-    Log2(4, "   cat max magnitude= " + str(pp.CatalogMaximumMagnitude))
-    Log2(4, "   Catalog stars= " + str(len(pp.CatalogStars)))
-    Log2(4, "   Image stars= " + str(len(pp.ImageStars)))
-    Log2(4, "   FWHM of image stars= " + str(round(pp.FullWidthHalfMax,3)))
-    Log2(4, "   Image background mean= " + str(round(pp.ImageBackgroundMean,1)))
-    Log2(4, "   Image background sigma= " + str(round(pp.ImageBackgroundSigma,3)))
-    Log2(4, "   Most frequent pixel value= " + str(pp.ImageStatisticalMode))
-    Log2(4, "   Maximum pixel value= " + str(pp.MaximumPixelValue))
-    Log2(4, "   Minimum pixel value= " + str(pp.MinimumPixelValue))
-    Log2(4, "   Expected scale= " + str(expectedScale))
-    Log2(4, "   RA=" + UTIL.HoursToHMS(pp.RightAscension,":",":","",1) + "  Dec="+DegreesToDMS(pp.Declination))
-
-    #DumpPP(pp)
-    try:
-        bSolve = pp.Solve()
+        bSolve,msg = MultiPPSolve.MultiPPSolve(pp,camera, expectedPos, vState)
+        
     except:
         bSolve = False
+        msg = "Exception for MultiPPSolve"
         DumpPP(pp)
 
+    Log2(0,msg)
+    
     end = time.time()
-
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     if not bSolve:
         if camera == 1:
             Log2(4,"Pinpoint did NOT solve.")
@@ -4940,7 +4863,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
             return (True, estJ2000RA, estJ2000Dec,0.)     #success
 
         Log2(1,"Result: failed to solve  (%5.2f sec)" % (end-start))
-        Log2Summary(1,"PP " + sCamera + " failed; # stars = %d" % numImageStars)
+        Log2Summary(1,"PP " + sCamera + " failed; SideOfSky=%d; # stars = %d" % (SideOfSky(vState),numImageStars))
 
         try:
             Log2(2, "vvvvvvvvvv")
@@ -4975,7 +4898,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     diff = abs( abs(pp.ArcsecPerPixelHoriz) - expectedScale )
     if (diff/expectedScale)*100 > SCALE_THRESHOLD_PCT:
         Log2(1,"Result: bad scale  (%5.2f sec)" % (end-start))
-        Log2Summary(1,"PP " + sCamera + " failed; bad scale; # stars = %d" % numImageStars)
+        Log2Summary(1,"PP " + sCamera + " failed;  bad scale; # stars = %d" % numImageStars)
 
         #Note: do not count this as a Wide failure for bad weather detection
 
@@ -5032,7 +4955,7 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 #               values instead, I could avoid this
 
         Log2(2,"Difference    %9s      %8s  = %6.2f arcmin" % (UTIL.HoursToHMS(diffRA,":",":","",1),DegreesToDMS(diffDec),delta))
-        Log2Summary(1,"PP " + sCamera + " SUCCESS, Diff: %6.2f arcmin; # stars = %d" % (delta,numImageStars))
+        Log2Summary(1,"PP " + sCamera + " SUCCESS, SideOfSky=%d, Diff: %6.2f arcmin; # stars = %d" % (SideOfSky(vState),delta,numImageStars))
 
 
     solvedRA = pp.RightAscension
@@ -6174,24 +6097,28 @@ def SideOfSky(vState):
     # Eventually the Gemini.NET driver will return the pointing state; currently it
     #  returns the side of pier (which is not the same for far NE/NW parts of sky)
 
-    #Important: this should be the ONLY code that looks at vState.MOUNT.SideOfPier !!!
-    HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
-    if HA < -12:  HA += 24
-    if HA > 12: HA -= 24
-    #negative if position east of meridian (after adjustments for wrapping)
+    try:
+        #Important: this should be the ONLY code that looks at vState.MOUNT.SideOfPier !!!
+        HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
+        if HA < -12:  HA += 24
+        if HA > 12: HA -= 24
+        #negative if position east of meridian (after adjustments for wrapping)
 
-    if HA > -6 and HA < 6:
-        #position is described by side of pier
-        if runMode == 1:
-            return vState.MOUNT.SideOfPier
-        else:
-            return 0    #running in simulator mode, which doesn't have this attribute
+        if HA > -6 and HA < 6:
+            #position is described by side of pier
+            if runMode == 1:
+                return vState.MOUNT.SideOfPier
+            else:
+                return 0    #running in simulator mode, which doesn't have this attribute
 
-    if HA >= 6:
-        return 0    #pointing west (far to northwest, below Polaris)
+        if HA >= 6:
+            return 0    #pointing west (far to northwest, below Polaris)
 
-    #else HA <= -6
-    return 1        #pointing east (far to northeast, below Polaris)
+        #else HA <= -6
+        return 1        #pointing east (far to northeast, below Polaris)
+    except:
+        Error("Exception thrown in call to SideOfSky")
+        return 0
 
 #--------------------------------------------------------------------------------------------------------
 def PredictSideOfPier(pos, vState):
@@ -7088,10 +7015,10 @@ def execDumpState(tup,vState):
 #--------------------------------
 def execArchive(t,vState):
     #runs the __FinishSession.bat file
-    
+
     #Important: close the databases before running script, so script can rename the daily database file
     if vState.SQMASTER is not None:
-        imaging_db.SqliteStartup( vState.SQMASTER, 'Exec5D-shutdown' ) 
+        imaging_db.SqliteStartup( vState.SQMASTER, 'Exec5D-shutdown' )
         vState.SQMASTER.close()
         vState.SQMASTER = None
     if vState.SQLITE is not None:
@@ -7393,7 +7320,7 @@ def execCropDarks(t,vState):
        dic["bin"] = 2
 
     return implDarks(dic,vState)
-    
+
 def execUseful30MinuteDelay(vState):
     #called when we want a 30 minute delay, so take 30 minutes of darks.
     #Enhancement to do: do other variations of exposure/bin
@@ -11614,7 +11541,7 @@ def implBias(dic,vState):
         vState.CAMERA.BinX = argBin
         vState.CAMERA.BinY = argBin
         vState.CAMERA.SetFullFrame()
-    
+
     for i in range(argRepeat):
         filename_i = CreateFilename(vState.path_dark_bias_flat, argFileName,vState,argRepeat)
         if i == 0:  #just log on console this 1st time here
@@ -11696,7 +11623,7 @@ def implDarks(dic,vState):
             vState.CAMERA.SetFullFrame()
             vState.CAMERA.BinX = argBin
             vState.CAMERA.BinY = argBin
-          
+
             if dic["crop"] == "yes":
                 tupc = CalcCropSize(dic["bin"],vState.CAMERA.cameraXSize,vState.CAMERA.cameraYSize)
                 vState.CAMERA.StartX = tupc[0]
@@ -11713,8 +11640,8 @@ def implDarks(dic,vState):
                 vState.CAMERA.BinX = argBin
                 vState.CAMERA.BinY = argBin
                 vState.CAMERA.SetFullFrame()
-          
-          
+
+
        except:
           pass
 
@@ -12033,7 +11960,7 @@ def implImagerExposure(index,dic,vState):
         except:
             currentPos = "(exception)"
             currentTemp = "(exception)"
-        Log2Summary(2,"Exposure complete %s  Temp:%s  Pos:%s" % (filename_i,currentTemp,currentPos))
+        Log2Summary(2,"Exposure complete %s  Temp:%s  Pos:%s SideOfSky=%d" % (filename_i,currentTemp,currentPos,SideOfSky(vState)))
 
         ReportImageFWHM(vState, filename_i)     #log info on image
 

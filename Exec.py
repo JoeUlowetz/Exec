@@ -2,7 +2,7 @@
 
 #Setting for config file:   THIS ONLY APPLIES TO WIDE FIELD, ALL NARROW FIELDS STILL USE PP
 #	Set_Astrometry.net=1	#0=disable, 1=use after 2 failures of PP solve, 2=use all the time(disable all PP solves)
-
+# line 4412:  CustomAstrometryNetSolve(...)
 
 BASE = r"C:\Users\W510\Documents"
 BASE2 = r"C:\Documents and Settings\Joe\My Documents"
@@ -98,6 +98,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #               to CustomPinpointSolve in exception block to catch and handle as a failed solve; otherwise program can exit without safety park
 #               (this code hasn't changed for years, so this must be a very rare occurrence)
 #2017.08.30 JU: removed calls to RetryInitialMovementUntilClear and replaced with raise WeatherError
+#2017.09.12 JU: Revise logic for calling Pinpoint and Astrometry.net logic
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -4280,6 +4281,22 @@ def AdvancedPlateSolve( camera, expectedPos, targetID, filename, trace, vState )
     # This is called by PinPointSingle()
     # This decides whether PinPoint or Astrometry.net is being used
     # See CustomPinpointSolve() for defn of arguments and return
+    
+    #2017.09.12 JU: change logic so always tries PP first (fast), and
+    #   then only tries AN if PP fails AND image has "lots" of stars.
+    #   Only want/need to use AN if scope position is far from expected
+    #   location, causing PP to fail. If "few" stars and PP can't solve
+    #   then the sky is probably cloudy; don't bother w/ AN attempt; instead
+    #   take another image and try PP again to see if cleared up.
+    #   Note: PP solve attempts give count of # image stars to use to decide
+    #   if worth trying AN if PP fails.
+    #
+    #New logic:
+    #   Take WIDE image
+    #   try PP solve; if works, DONE.
+    #   if star count < 100, take another WIDE image (probably cloudy) (until retry exceeded)
+    #   else try AN solve; if works, DONE
+    #   take another WIDE image (until retry exceeded)
 
     #2017.08.22 JU: enclose this in exception block because one time something went wrong in CustomPinpointSolve and it
     #   tried to log something that didn't format correctly as a string, throwing an unhandled exception (no safety park!)

@@ -1,3 +1,4 @@
+#!python2
 # Exec8D.py		Uses ephem for coord translation; Uses Astrometry.net for solving when PP unable to solve
 
 #Remove calls for:
@@ -4200,7 +4201,7 @@ def TakeNarrowImage(exposure,vState):   #used by Pinpoint solve routine
     vState.CAMERA.SetFullFrame()
     vState.CAMERA.BinX = vState.ppState[0].binning
     vState.CAMERA.BinY = vState.ppState[0].binning
-    Log2(2,"Exposure starting...")
+    Log2(2,">Exposure starting...")
 
     #2015.07.03 JU: change how Narrow PP image taken: if the filter currently selected
     # in the camera is the V filter (position 4), then take image using that filter,
@@ -4224,7 +4225,7 @@ def TakeNarrowImage(exposure,vState):   #used by Pinpoint solve routine
 #--------------------------------------------------------------------------------------------------------
 def TakeWideExposure(exposure,vState):  #used by Pinpoint solve routine
   try:
-    Log2(2,"Exposure (wide) starting...")
+    Log2(2,">Exposure (wide) starting...")
     vState.CAMERA.GuiderExpose( exposure )
     LogStatusHeaderBrief()
     while vState.CAMERA.GuiderRunning:
@@ -4345,7 +4346,7 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
         filename = PinpointFilename(targetID,camera,vState)
         doc.SaveFile( filename, 3, False, 1, 0)   # 3=fits format; False=do not autostretch; 1=16-bit data; 0=no compression
 
-        Log2(2,"Exposure complete: " + NameWithoutPath(filename))
+        Log2(2,"<Exposure complete: " + NameWithoutPath(filename))
         if camera == 0:
            StatusLog(filename)   #don't bother logging when exposing w/ Guider because no guide statistics then
 
@@ -6439,10 +6440,10 @@ def GOTO2(desiredScopePos,vState,name=""):
     #This is ONLY called by GOTO(), so that GOTO() can handle multiple retry attempts if necessary
     #Return:  0 = success, 1 = problem, 2 = target below horizon
 
-    Log2(2,"***START OF GOTO2; COORDS DESIRED ARE:***")
+    Log2(4,"***START OF GOTO2; COORDS DESIRED ARE:***")
     line0,line1 = desiredScopePos.dump2()
-    Log2(3,line0)
-    Log2(3,line1)
+    Log2(4,line0)
+    Log2(4,line1)
 
     #record the location we intend to end at
     vState.gotoPosition = desiredScopePos
@@ -6479,14 +6480,14 @@ def GOTO2(desiredScopePos,vState,name=""):
     # *** MOVE THE MOUNT to desired location **************
     #******************************************************
     if name != desiredScopePos.posName:
-        Log2(1,"Slewing to: " + name + " / " + desiredScopePos.posName)
+        Log2(1,">Slewing to: " + name + " / " + desiredScopePos.posName)
     else:
-        Log2(1,"Slewing to: " + name)
+        Log2(1,">Slewing to: " + name)
     dRA_JNow_destination, dDec_JNow_destination = desiredScopePos.getJNowDecimal()
     dRA_J2000_destination, dDec_J2000_destination = desiredScopePos.getJ2000Decimal()
 
-    Log2(3,"J2000 RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_J2000_destination,":",":","",1), DegreesToDMS(dDec_J2000_destination)))
-    Log2(3,"JNow  RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_JNow_destination, ":",":","",1), DegreesToDMS(dDec_JNow_destination) ))
+    Log2(4,"J2000 RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_J2000_destination,":",":","",1), DegreesToDMS(dDec_J2000_destination)))
+    Log2(4,"JNow  RA=%s  Dec=%s" % (vState.UTIL.HoursToHMS(dRA_JNow_destination, ":",":","",1), DegreesToDMS(dDec_JNow_destination) ))
     #Log2(3,"Decimal JNow RA=%6.3f  Dec=%6.3f" % (dRA_JNow_destination, dDec_JNow_destination))
     Log2(5,"desiredScopePos.dump():")
     Log2(5,desiredScopePos.dump())
@@ -6540,14 +6541,14 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromRA = toRA    #for next check
        fromDec = toDec
 
-    Log2(2,"***WHERE WE STOPPED MOVING, ACCORDING TO THE SLEWING FLAG***")
-    Log2(3,"JNow RA=" + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1) + "   Dec=" + DegreesToDMS( vState.MOUNT.Declination ))
+    Log2(4,"***WHERE WE STOPPED MOVING, ACCORDING TO THE SLEWING FLAG***")
+    Log2(4,"JNow RA=" + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1) + "   Dec=" + DegreesToDMS( vState.MOUNT.Declination ))
 
     slewTime = time.time() - started
     HA = vState.MOUNT.SiderealTime - vState.MOUNT.RightAscension
     if HA > 12: HA -= 24
     if HA < -12: HA += 24
-    Log2(2,"Took %d seconds to complete this slew; pier side now=%d/%d; Hour angle = %5.2f" % (slewTime,vState.MOUNT.SideOfPier,SideOfSky(vState),HA))
+    Log2(1,"<Took %d seconds to complete this slew; pier side now=%d/%d; HA = %5.2f" % (slewTime,vState.MOUNT.SideOfPier,SideOfSky(vState),HA))
     #Log2(2,"Hour angle = %5.2f" % (HA))
 
     afterScopePos = Position()     #store position of scope before movement
@@ -6589,8 +6590,8 @@ def GOTO2(desiredScopePos,vState,name=""):
     #SANITY CHECK: DOES OUR OBJECT REALLY HAVE SAME VALUES AS SCOPE REPORTED?
     checkRA = afterScopePos.dRA_JNow() - vState.MOUNT.RightAscension
     checkDec = afterScopePos.dDec_JNow() - vState.MOUNT.Declination
-    Log2(1,"Sanity check of final position: %f, %f" % (checkRA,checkDec))
-    Log2(1,"Simple diff: desired - final:   %f, %f" % (dRA_diffJ,dDec_diffJ))
+    Log2(4,"Sanity check of final position: %f, %f" % (checkRA,checkDec))
+    Log2(4,"Simple diff: desired - final:   %f, %f" % (dRA_diffJ,dDec_diffJ))
 
     dRA_diff2  = desiredScopePos.dRA_J2000() - afterScopePos.dRA_J2000()    #dRA_JNow_destination - vState.MOUNT.RightAscension
     dDec_diff2 = desiredScopePos.dDec_J2000() - afterScopePos.dDec_J2000()  #dDec_JNow_destination - vState.MOUNT.Declination
@@ -6636,9 +6637,9 @@ def GOTO2(desiredScopePos,vState,name=""):
         #SafetyPark(vState)
         #raise SoundAlarmError,'Slew failed to reach desired Dec'
 
-    Log2(2,"***we are now about to monitor location to see if still moving***")
-    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    Log2(4,"***we are now about to monitor location to see if still moving***")
+    Log2(4,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(4,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
 
     #!! Check for excessive movement after mount says it stopped
     maxExtend = 60  #max we can extend this delay if we see movement
@@ -6671,9 +6672,9 @@ def GOTO2(desiredScopePos,vState,name=""):
        fromRA = toRA    #for next check
        fromDec = toDec
 
-    Log2(2,"***we exited loop looking for after movement; it should be stationary***")
-    Log2(3,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-    Log2(3,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    Log2(4,"***we exited loop looking for after movement; it should be stationary***")
+    Log2(4,"JNow RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(4,"JNow  Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
 
     afterScopePos = Position()     #store position of scope before movement
     if runMode == 1 or runMode == 2:
@@ -6685,12 +6686,12 @@ def GOTO2(desiredScopePos,vState,name=""):
     Log2(4,"vState.gotoPosition.isValid set to TRUE")
     Log2(5,"vState.gotoPosition = " + vState.gotoPosition.dump() )
 
-    Log2(2,"***Finished with GOTO movement; this is where we stopped***")
+    Log2(1,"Finished with GOTO movement; this is where we stopped:")
     line0,line1 = afterScopePos.dump2()
-    Log2(3,line0)
-    Log2(3,line1)
-    Log2(3,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
-    Log2(3,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
+    Log2(2,line0)
+    Log2(2,line1)
+    Log2(4,"... RA:  " + UTIL.HoursToHMS( vState.MOUNT.RightAscension,":",":","",1))
+    Log2(4,"... Dec: " + DegreesToDMS( vState.MOUNT.Declination ))
     #print vState.MOUNT.RightAscension,vState.MOUNT.Declination
 
     return 0 #OK
@@ -6931,7 +6932,7 @@ def WriteRetryFile(copyList,index):
             n += 1  #just count executable lines
 
     f.close()
-    Log2(3,"Rewrote file '%s' with %d lines remaining" % (RELOADFILE,n))
+    #Log2(3,"Rewrote file '%s' with %d lines remaining" % (RELOADFILE,n))
 
 #-----------------------------------------------
 #TODO: change the below to format as HTML (and/or PHP)
@@ -7079,14 +7080,14 @@ def CheckIfCloudy():
         if tup[3] > -10.0:      #Rule for cloudy (for now): if sky temp diff warmer than -10C
             return True
     return False
-    
+
 #--------------------------------------------------------------------------------------------------------
 def GetWeathershieldInfo():
     #Returns ( False, ) if no data, or (True,airTemp,skyTemp,skyDiff)
     #   Air2:-7.1C
     #   IR:-27.3C
     #   Diff:-20.2C
-    
+
     if not UseWeathershieldFlag():
         Log2(4,"UseWeathershield is disabled")
         return (False,)
@@ -7098,7 +7099,7 @@ def GetWeathershieldInfo():
         ind_1a = myfile.find("<h3>Air2:")
         ind_1b = myfile.find("</h3>",ind_1a)
         field1 = myfile[ind_1a+9:ind_1b]
-        
+
         ind_2a = myfile.find("<h3>IR:")
         ind_2b = myfile.find("</h3>",ind_2a)
         field2 = myfile[ind_2a+7:ind_2b]
@@ -7106,10 +7107,10 @@ def GetWeathershieldInfo():
         ind_3a = myfile.find("<h3>Diff:")
         ind_3b = myfile.find("</h3>",ind_3a)
         field3 = myfile[ind_3a+9:ind_3b]
-        
+
         Log2(4,"Weathershield info: %s, %s, %s" % (field1,field2,field3))
         return (True,float(field1[:-2]),float(field2[:-2]),float(field3[:-2]))
-        
+
     except Exception,e:
         Log2(3,"Call to GetWeathershieldInfo is not working")
         print str(e)
@@ -7285,7 +7286,7 @@ def Process( Line, vState ):
                 #we found the specified command to get its impl function to call
                 Log2(0," ")
                 Log2(0,"*** Execute Command: %s" % (Line))
-                
+
                 #2019.12.16 JU: first check sun altitude, and weathershield
                 if TestSunAltitude(-6):
                     Log2(0,"Sun too high to execute another command")
@@ -7347,7 +7348,7 @@ def Process( Line, vState ):
                                 break
 
 #TODO: add check of GetWeathershieldInfo() in all/important imaging steps, so it comes here as soon as cloudy, not after series of PP solve failures
-                                
+
                             #New logic using Weathershield data via web connection: 2019.12.10 JU
                             if bWeatherCheck:   #only check weather for certain commands
                                 result = GetWeathershieldInfo()     #result = tuple( false, ) if no data, or (true,airTemp,skyTemp,skyDiff,sunAltitude)
@@ -7407,9 +7408,9 @@ def Process( Line, vState ):
                 Log2(4,"Process(), keep executing normally")
 
                 #show how many error messages (if any) occurred during this step
-                global errorCount
-                Log2(0,"Error count = %d" % errorCount)
-                errorCount = 0
+                #global errorCount
+                #Log2(0,"Error count = %d" % errorCount)
+                #errorCount = 0
                 return
 
         Error( "Unable to parse command (this string does not appear in action_list): " + Line)      #we fell out of the above loop so did not find a match
@@ -7819,7 +7820,7 @@ def execUseful30MinuteDelay(vState):
 def execUseful5MinuteDelay(vState):
     #to do: future enhancement: alternate different kinds of Dark/Bias/Cropped frames here
     dic = {}
-    dic["crop"]  = "no"
+    dic["crop"]  = "yes"
     dic["isSeq"] = "no"
     dic["limit"] = "count"
     dic["exp"] = 300
@@ -7885,19 +7886,21 @@ def execWait4Clear1(vState):
             return (0,)
         Log2(2,"Weathershield reports: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
         if result[3] < -10.:
-            Log2(0,"Wait4Clear thinks it is clear")
+            #Log2(0,"Wait4Clear thinks it is clear")
+            Log2(2,"CLEAR: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
             return (0,)
         if firstPark:
             SafetyPark( vState )
             firstPark = False
-        Log2(2,"It appears to be cloudy currently. Wait for it to clear up.")
-        Log2(3,"To disable this feature, edit C:/fits_script/UseWeathershield.txt")
+        Log2(2,"*Cloudy*: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
+        #Log2(2,"It appears to be cloudy currently. Wait for it to clear up.")
+        #Log2(3,"To disable this feature, edit C:/fits_script/UseWeathershield.txt")
         execUseful5MinuteDelay(vState)
         result = GetWeathershieldInfo()
-        
+
     Log2(0,"Wait4Clear unable to get data from Weathershield")
     return (0,)
-    
+
 #--------------------------------
 def UseWeathershieldFlag():
     #This file controls whether the Exec8d.py script uses WeatherShield to decide if it is clear enough
@@ -7913,7 +7916,7 @@ def UseWeathershieldFlag():
     except:
         Log2(0,"Unable to read file C:/fits_script/UseWeathershield.txt")
     return False
-    
+
 #--------------------------------
 def execWait4Clear(t,vState):
     return execWait4Clear1(vState)
@@ -11905,7 +11908,7 @@ def FocusCompensation(vState):
         Log2(2,"Position before movement = %d, old temperature = %d" % (vState.FOCUSER.Position,vState.LastFocusTemperature))
         vState.FOCUSER.Move( newPos )
         time.sleep(3)    #give scope a chance to settle after focuser movement
-        Log2(2,"Position after movement  = %d, now temperature = %d" % (vState.FOCUSER.Position,currentFocusTemperature))
+        Log2(2,"Position after movement  = %d, new temperature = %d" % (vState.FOCUSER.Position,currentFocusTemperature))
 
         #2010/04/09 22:08:39 Focus Comp     n/a   999 9999    n/a    n/a
         #line = "Focus Comp     n/a   %3d %4d    n/a    n/a  F:%d" % ( currentFocusTemperature, newPos,vState.CAMERA.Filter)
@@ -11920,9 +11923,9 @@ def FocusCompensation(vState):
         oldvalue = vState.LastFocusPosition
         vState.LastFocusPosition = vState.FOCUSER.Position		#newPos
 
-        Log2(3,"  LastFocusPosition    = %d (C)  (was = %d)" % (vState.LastFocusPosition,oldvalue))
-        Log2(3,"  LastFocusTemperature = %d" % vState.LastFocusTemperature)
-        Log2(3,"  Filter               = %d" % vState.CAMERA.Filter)
+        Log2(4,"  LastFocusPosition    = %d (C)  (was = %d)" % (vState.LastFocusPosition,oldvalue))
+        Log2(4,"  LastFocusTemperature = %d" % vState.LastFocusTemperature)
+        Log2(4,"  Filter               = %d" % vState.CAMERA.Filter)
 
         LogBase(line,FOCUSER_LOG)
         LogPerm(line,PERM_FOCUSER_LOG)
@@ -12224,7 +12227,10 @@ def implBias(dic,vState):
     argBin        = dic["bin"]
     dic["camera"] = "imager"
 
-    argFileName   = "Bias_%dx%d_" % (argBin,argBin)         #  base filename WITHOUT the trailing 5 seq digits.
+    if dic["crop"] == "yes":
+        argFileName = "Crop_bias_%dx%d_" % (argBin,argBin)         #  base filename WITHOUT the trailing 5 seq digits.
+    else:
+        argFileName   = "Bias_%dx%d_" % (argBin,argBin)         #  base filename WITHOUT the trailing 5 seq digits.
 
     ClearImager(dic,vState)
     vState.CAMERA.BinX = 1  #make sure no rounding for Full Frame
@@ -12323,7 +12329,10 @@ def implDarks(dic,vState):
        argBin        = dic["bin"]
 
        #format: Dark_1x1_150sec_
-       argFileName   = "Dark_%dx%d_%dsec_" % (argBin,argBin,argExposure)         #  base filename WITHOUT the trailing 5 seq digits.
+       if dic["crop"] == "yes":
+            argFileName = "Crop_dark_%dx%d_%dsec_" % (argBin,argBin,argExposure)         #  base filename WITHOUT the trailing 5 seq digits.
+       else:
+            argFileName = "Dark_%dx%d_%dsec_" % (argBin,argBin,argExposure)         #  base filename WITHOUT the trailing 5 seq digits.
 
        try:
             vState.CAMERA.BinX = 1    #make sure no rounding for Full Frame
@@ -14002,7 +14011,7 @@ if not UseWeathershieldFlag():
     print("*** To enable it, edit the file C:/fits_script/UseWeathershield.txt")
     print("*** Press enter to continue...")
     x = raw_input()
-    
+
 try:
     okToRun = False
     if len(sys.argv) == 1:

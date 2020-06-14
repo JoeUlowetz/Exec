@@ -103,7 +103,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #               to complete, the feature is disabled and the thread is abandoned so the rest of the logic can work normally.
 #2018.01.06 JU: Rewrote PrecessLocalToJ2000() and PrecessJ2000ToLocal() to use PyEphem library now
 #2018.01.07 JU: Initial changes to Precess...() routines fixed; should work now.
-
+#2018.04.08 JU: Changed settings for vState.MeridianSafety and vState.MeridianPast because they were too large and mount would stop first
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -185,6 +185,7 @@ import subprocess
 import threading
 
 import ephem
+import random   #used for RandomSafeLocation()
 
 #Exec4n.py 2015.12.13
 import socket
@@ -382,8 +383,9 @@ class ArgumentError(Exception):
 #--------------------------------
 class cState:
     def Reset(self):
-        self.MeridianSafety = 0.3     #interrupt current exposure if this far past meridian
-        self.MeridianPast = 0.2       #do not start new exposure if this far past meridian
+        self.MeridianSafety = 0.15     #interrupt current exposure if this far past meridian
+        self.MeridianPast = 0.1       #do not start new exposure if this far past meridian
+        #2018.04.08 JU: changed above; was 0.3, 0.2 but even at 0.2 the mount was stopping first because of meridian limit, so need smaller values
         self.guide         = 0        #0=no, 1=yes for guiding during exposures
         self.GuidingSettleThreshold = 0.4
         self.GuidingSettleTime      = 120
@@ -1000,7 +1002,7 @@ PINPOINT_LOG   = r"C:\fits_script\Log2Pinpoint.txt"
 PINPOINT_SOLVE = r"C:\fits_script\Log2PinpointSolve.txt"
 FOCUSER_LOG    = r"C:\fits_script\Log2Focuser.txt"
 PERM_FOCUSER_LOG    = r"C:\fits_script\Log2Focuser.LOG" #this is a permanent file, not daily
-STATUS_LOG     = r"C:\fits_script\Status2.txt"
+STATUS_LOG     = r"C:\fits_script\Log2Status.txt"
 FOV_LOG        = r"C:\fits_script\FOV2Offset.txt"
 TARGET_LOG     = r"C:\fits_script\Log2Targets.txt"      #reports all catalog lookups
 GUIDING_LOG    = r"C:\fits_script\Log2Guiding.txt"
@@ -1044,13 +1046,12 @@ def ObservingDateSet():
 
 
 def StatusLog(value):
-    #iDateTime = time.gmtime()
     sDateStr = ObservingDateString()	# time.strftime('_%Y%m%d.txt',iDateTime)
-    statusLogName = STATUS_LOG[:-4] + "_" + sDateStr
+    statusLogName = STATUS_LOG[:-4] + "_" + sDateStr + ".txt"   #2018.01.19 JU: why did this NOT have file suffix .txt??? Added it now. Also changed base filename from Status2.txt to Log2Status.txt
     fs = open( statusLogName, "a" )
     fs.write(value + "\n")
     fs.close()
-    Log2(4,value)   #put the status lines in the overall log file also (see if I like this)
+    Log2(4,value)   #put the status lines in the overall log file also
 
 #--------------------------------
 def StatusWindowSimple(value):   #common code
@@ -1503,7 +1504,9 @@ def TestGuidingTrend(label,guideList):
         #value > 0, so look for decreasing values:
         if last1 < last2 and last2 < last3:
             return False    #values seem to be improving
-    Log2(3,"TestGuidingTrend indicates bad trend for %s (most recent last): %4.2f  %4.2f  %4.2f" % (label,last3,last2,last1))
+    msg = "TestGuidingTrend indicates bad trend for %s (most recent last): %4.2f  %4.2f  %4.2f" % (label,last3,last2,last1)
+    Log2(3,msg)
+    StatusLog(msg)
     return True
 
 def DumpGuideErrorList(label,guideList):
@@ -1549,8 +1552,8 @@ def LogStatus( vState ):  #write out frequent status info to special file
             Log2(4,nowPos.dump())
             Log2(4,"vState.gotoPosition.dump:")
             Log2(4,vState.gotoPosition.dump())
-            
-            
+
+
             diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
             diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
             DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
@@ -1844,7 +1847,7 @@ def LogStatusShort(vState):
       sideofpier,                                #number
       UTIL.HoursToHMS(fSidereal,":",":","",1)                 #string
       )
-   Log2(4,value)
+   Log2(4,"LogStatusShort: " + value)
 
 #------------------------------------------------------------------------------
 def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAvgY,savgS,slenAvgS, msgX, msgY ):
@@ -1966,7 +1969,7 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
       savgX,slenAvgX,savgY,slenAvgY,savgS,slenAvgS,msgX,msgY
       )
 
-   StatusLog(prefix + value)
+   StatusLog(prefix + value)    #THIS IS THE IMPORTANT USE OF THIS LOG FILE
 
 #--------------------------------
 def NameWithoutPath(fullname):
@@ -3250,12 +3253,6 @@ def isVisible(azimuth,elevation):
 ##              (210,20), (220,20), (230,20), (240,18), (250,17), (260,22), (270,30), (280,35), (290,36), (300,40),
 ##              (310,45), (320,45), (330,45), (340,44), (350,43), (360,42)]
 
-    #OLD value for telescope shelter in yard:
-#    Horiz  = [ (10,25),  (20,35),  (30,43),  (40,60),  (50,62),  (60,70),  (70,70),  (80,70),  (90,70), (100,65),
-#              (110,62), (120,60), (130,40), (140,41), (150,53), (160,58), (170,61), (180,61), (190,59), (200,60),
-#              (210,61), (220,54), (230,58), (240,54), (250,43), (260,31), (270,18), (280,24), (290,28), (300,32),
-#              (310,41), (320,43), (330,38), (340,25), (350,20), (360,27)]
-    #return 1    #DISABLE THIS FEATURE
     for (az,el) in Horiz:
         if azimuth < az:
             if elevation >= el:
@@ -3609,7 +3606,7 @@ def intToFilter(iFilter):
         return 'Luminance'
 
     return '<invalid code>'
-    
+
 def hours2rad(hours):
     return hours / (12./math.pi)
 def deg2rad(deg):
@@ -3618,7 +3615,7 @@ def rad2hours(rad):
     return rad * (12./math.pi)
 def rad2deg(rad):
     return rad * (180./math.pi)
-    
+
 #--------------------------------------------------------------------------------------------------------
 def PrecessLocalToJ2000(dJNowRA, dJNowDec):
     #Newest approach: use ephem
@@ -3653,34 +3650,6 @@ def PrecessLocalToJ2000(dJNowRA, dJNowDec):
 
     return tup
 
-##    #this tries treating the incoming coords as J2000 and precesses
-##    #them to JNow, and calculates difference that the precession
-##    #caused; then reverse the sign of this difference and apply to
-##    #incoming coords, with the idea that the precession should be
-##    #roughly symmetric
-##    #    diff = JNow - J2000
-##    #    J2000 = JNow - diff
-##    tup = PrecessJ2000ToLocal(dJNowRA,dJNowDec)  #yes, this calls the function w/ JNow coords!
-##    delta_RA = dJNowRA - tup[0]
-##    delta_Dec = dJNowDec - tup[1]
-##
-##    dJ2000RA = dJNowRA + delta_RA
-##    dJ2000Dec = dJNowDec + delta_Dec
-##
-##    #did RA wrap?
-##    if dJ2000RA >= 24:
-##        dJ2000RA -= 24
-##    if dJ2000RA < 0:
-##        dJ2000RA += 24
-##
-##    #TEST: reverse the change to see if we get back the original values
-##    tup2 = PrecessJ2000ToLocal(dJ2000RA,dJ2000Dec)
-##
-##    Log2(5,"Verify JNow -> J2000 conversion -> JNow to confirm:")
-##    Log2(5,"   Starting JNow coords:  %s  %s" % (UTIL.HoursToHMS(dJNowRA)  , DegreesToDMS(dJNowDec)))
-##    Log2(5,"   Ending   JNow coords:  %s  %s" % (UTIL.HoursToHMS(tup2[0])  , DegreesToDMS(tup2[1])))
-##    Log2(5,"   The J2000 coords:      %s  %s" % (UTIL.HoursToHMS(dJ2000RA) , DegreesToDMS(dJ2000Dec)))
-##    return (dJ2000RA,dJ2000Dec)
 
 #--------------------------------------------------------------------------------------------------------
 def PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec):
@@ -3695,8 +3664,8 @@ def PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec):
     Log2(5,"         Result JNow coords:     %s  %s" % (UTIL.HoursToHMS(tup[0],":",":","",1)  , DegreesToDMS(tup[1])))
     return tup
 
-    
-    
+
+
     #PREVIOUS APPROACH, WORKED (MOSTLY?)========================================================
     star = win32com.client.Dispatch("NOVAS.Star")
     star.RightAscension = dJ2000RA
@@ -3720,36 +3689,23 @@ def PrecessJ2000ToLocal(dJ2000RA, dJ2000Dec):
 
     return tup
 
-##    #Old approach
-##    # Local Topocentric
-##    objv = win32com.client.Dispatch("NOVAS.Star")
-##    objv.RightAscension = dJ2000RA
-##    objv.Declination = dJ2000Dec
-##    #objv.DeltaT handled by Novas
-##
-##    site = win32com.client.Dispatch("NOVAS.Site")
-##    site.Latitude = 42      #lat/long are only going to matter for close solar system objects
-##    site.Longitude = -87
-##    site.Height = 190
-##    site.Temperature = 10
-##
-##    #jd(yy, mm, dd, hr, mn, sec):
-##    t = time.gmtime( time.time() )    #yyyy,mm,dd,hh,mi,sec;  Use current moment in time
-##    epoch = jd( t[0], t[1], t[2], t[3], t[4], t[5])
-##
-##    #doRefraction = True     #won't matter much, but might as well use it
-###2012.06.07 JU: using refraction might be the reason I can't run this in reverse all the time!!!
-##    doRefraction = False
-##
-##    tvec = objv.GetTopocentricPosition(epoch, site, doRefraction)
-##
-##    dLocalRA = tvec.RightAscension
-##    dLocalDec = tvec.Declination
-##    tup = (dLocalRA, dLocalDec)     #return multiple values in a tuple
-##
-##    del objv
-##    del site
-##    return tup
+#==============================================================================
+def AzElev2RaDec(azimuth,elevation):
+    #Calculate the RA/Dec (JNow) of a spot in the sky at the specified altitude/azimuth, at the current moment
+    #Input: 2 strings containing azimuth, elevation in degrees
+    #Output: tuple: (ra,dec) in decimal JNow
+
+    observer = ephem.Observer()
+    observer.lon = deg2rad(-87.)
+    observer.lat = deg2rad(42.)
+    observer.elevation = 0
+    observer.epoch = ephem.now()
+    observer.date = ephem.now()
+
+    ra,dec = observer.radec_of(azimuth, elevation)
+
+    #print "EPHEM:   %f %f" % (rad2hours(ra),rad2deg(dec))
+    return (rad2hours(ra),rad2deg(dec))
 
 #--------------------------------------------------------------------------------------------------------
 def CalcSolarAlt(targetYear,targetMonth,targetDay,UT,LONG,LAT):
@@ -4324,7 +4280,7 @@ def AdvancedPlateSolve( camera, expectedPos, targetID, filename, trace, vState )
     # This is called by PinPointSingle()
     # This decides whether PinPoint or Astrometry.net is being used
     # See CustomPinpointSolve() for defn of arguments and return
-    
+
     #2017.09.12 JU: change logic so always tries PP first (fast), and
     #   then only tries AN if PP fails AND image has "lots" of stars.
     #   Only want/need to use AN if scope position is far from expected
@@ -4461,14 +4417,14 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
     #2017.07.03: before calling Astrometry.net, first use PinPoint to COUNT the number of stars
     # present in the image. If the number is too low, don't bother trying Astrometry.net (probably bad weather)
     numImageStars = CountImageStars( camera, expectedPos, targetID, filename, trace, vState )
-        
+
     Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
     if numImageStars < 10:  #ADJUST THIS
         Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
         Log2(2, "vvvvvvvvvv")
         Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
-        return (False, 0., 0.,0.) 
+        return (False, 0., 0.,0.)
     #end of Pinpoint addition feature
 
     try:
@@ -4477,7 +4433,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2(2,"Starting thread")
         t.start()
         Log2(2,"Thread has been started; about to call join on thread")
-        
+
         t.join(600)  #if it takes more than 10 minutes, stop and disable this feature so normal logic can run instead
         Log2(2,"Checking thread result:")
         if t.is_alive():
@@ -4485,12 +4441,12 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
             vState.AstrometryNet = 0
             Log2Summary(0,"DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG")
             #NOTE: we abandon the thread; we don't try to do a final join() because the thread appears to be hung
-            return (False, 0., 0.,0.) 
+            return (False, 0., 0.,0.)
         else:
             Log2(2,"Thread completed normally")
         t.join()    #final join() to make sure fully done
         Log2(2,"Final join returned as expected")
-        
+
         Log2(0,"Msg: " + AstrometryResult[4])
         Log2(0,"Status: %d" % AstrometryResult[5])
         vState.ppState[camera].MaxSolveTime = AstrometryMaxSolveTime
@@ -4501,13 +4457,13 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
     except:
         Error("UNHANDLED EXCEPTION WHEN TRYING TO RUN THREAD for Astrometry.net")
         niceLogExceptionInfo()
-        return (False, 0., 0.,0.) 
-        
-#..................................................................................        
+        return (False, 0., 0.,0.)
+
+#..................................................................................
 def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename ):
     #WARNING: sometimes Astrometry.net can HANG indefinitely, so call it in a thread that we can abandon if it takes too long.
     #Otherwise, the entire program is held here, including not parking the scope at all.
-    
+
     #see documentation of argument list and return values in CustomPinpointSolve()
     global AstrometryResult
     global AstrometryMaxSolveTime
@@ -4584,7 +4540,7 @@ def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename ):
         del client
         AstrometryResult = (False, 0., 0.,0.,"Failed, status: " + msg,status)
         return
-#0. do not pass vState to thread; it has lots of COM objects embedded init        
+#0. do not pass vState to thread; it has lots of COM objects embedded init
 #1. return tuple: status
 #2. call star count outside of thread first
 #3. pass MaxSolveTime outside of vState
@@ -6198,10 +6154,67 @@ def PredictSideOfPier(pos, vState):
             # so force a pier flip first
             return (0, True)
 
-
 #--------------------------------------------------------------------------------------------------------
-def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coords
+
+def RandomSafeLocation():      #generate someplace in sky, away from meridian and horizons (values are string values of degrees)
+    #return strings for (azimuth,elevation)
+    return random.choice([ 
+        ( '21','63'),( '40','54'),( '56','41'),( '47','71'),( '64','58'),( '72','43'),
+        ( '89','60'),( '88','39'),('134','70'),('116','57'),('105','39'),( '87','77'),
+        ('162','58'),('134','47'),('119','35'),('164','47'),('142','40'),('159','37'),
+        ('342','59'),('335','69'),('312','61'),('298','50'),('320','78'),('293','64'),
+        ('265','80'),('269','62'),('270','47'),('231','73'),('252','60'),('259','45'),
+        ('235','57'),('250','41'),('197','60'),('222','52'),('238','41'),('194','52'),
+        ('234','40'),('192','48'),('209','44'),('226','36'),('195','40'),('281','49'),
+        ('213','67'),('217','48')
+    ] )
+
+def GOTO(targetScopePos,vState,name=""):
     #return false if OK, True if unable to GOTO position (below horizon?)
+    
+    for attempt in range(20):
+        problem = GOTO2(targetScopePos,vState,name)
+        if problem == 0:
+            Log2(1,"[GOTO] Success for target GOTO on attempt = %d" % attempt)
+            return False    #success
+        if problem == 2:
+            Log2(1,"[GOTO] Unable to GOTO target, below horizon; attempt = %d" % attempt)
+            return True    #failure, but in a good way
+            
+        Log2(1,"[GOTO] FAILED for target GOTO on attempt = %d" % attempt)
+        Log2Summary(1,"Begin Random goto solution")
+        #
+        #not able to move to specified location, try moving to some other location
+        for subAttempt in range(5):
+            az, el = RandomSafeLocation()      #generate someplace in sky, away from meridian and horizons (values are string values of degrees)
+            Log2(1,"[GOTO] Attempt random sky location: azimuth: %s, elevation: %s" % (az,el))
+            ra, dec = AzElev2RaDec(az,el)       #converts to JNow 
+            randPos = Position()
+            randPos.setJNowDecimal(ra,dec,"RandPos")
+            sRA,sDec = randPos.getJNowString()
+            Log2(1,"[GOTO] Random sky location is JNow RA: %s  Dec: %s" % (sRA,sDec))
+            problem = GOTO2(randPos,vState,"RandPos")
+            if problem == 0:
+                Log2(1,"[GOTO] Success for random GOTO")
+                Log2Summary(1,"Random goto was successful")
+                break   #Good, we were able to move someplace else
+            Log2(1,"[GOTO] FAILED for random GOTO, subattempt = %d" % subAttempt)  #repeat loop a few times to try other locations instead
+        if problem != 0:
+            #unable to successfully move to random location after several attempts,
+            # so try parking mount at this point, then let outer loop run again to see if any better
+            Log2(1,"[GOTO] Attempt SafetyPark after unable to move to random locations")
+            SafetyPark(vState)
+    #If we fall out of the outer loop, we have tried lots of attempts and not been successful, so give up
+    Error("! SLEW FAILED TO REACH DESIRED LOCATION AFTER MULTIPLE ATTEMPTS")
+    Log2Summary(1,"Unable to solve GOTO problem with Random solution; perform SafetyPark")
+    SafetyPark(vState)
+    raise SoundAlarmError,'Slew failed to reach desired location after multiple attempts'
+    
+            
+#--------------------------------------------------------------------------------------------------------
+def GOTO2(desiredScopePos,vState,name=""):
+    #This is ONLY called by GOTO(), so that GOTO() can handle multiple retry attempts if necessary
+    #Return:  0 = success, 1 = problem, 2 = target below horizon
 
     #record the location we intend to end at
     vState.gotoPosition = desiredScopePos
@@ -6218,7 +6231,7 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     Log2(6,"GOTO - \nBeforeScopePos:\n" + beforeScopePos.dump())
 
     if runMode == 3:
-        return False  #OK, nothing useful to do here
+        return 0  #OK, nothing useful to do here
 
     beforeSideOfPier = SideOfSky(vState)    #vState.MOUNT.SideOfPier
     sAlt_from = str(round(vState.MOUNT.Altitude,1))		#string
@@ -6246,8 +6259,9 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     #Log2(3,"Decimal JNow RA=%6.3f  Dec=%6.3f" % (dRA_JNow_destination, dDec_JNow_destination))
     Log2(4,"desiredScopePos.dump():")
     Log2(4,desiredScopePos.dump())
-    #print dRA_JNow_destination, dDec_JNow_destination
-    #print "values are above"
+
+    
+#start of subroutine here----------------------------    
     Log2(4,"About to issue SlewToCoordinatesAsync")
     try:
         vState.MOUNT.SlewToCoordinatesAsync(dRA_JNow_destination, dDec_JNow_destination)       # Movement occurs here <----------------
@@ -6256,8 +6270,9 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
         Error("Non-fatal exception, details below:")
         niceLogNonFatalExceptionInfo()
         Error("Skip this step, continue on with execution")
-        return True
-    Log2(4,"After call to SlewToCoordinatesAsync")
+        return 2
+    Log2(4,"After call to SlewToCoordinatesAsync")  #saw it take 11 seconds to execute the above Slew call ???
+
     LogStatusShort(vState)
     time.sleep(1)    #pause to make sure movement starts
     LogStatusShort(vState)
@@ -6265,6 +6280,7 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     fromRA = vState.MOUNT.RightAscension
     fromDec = vState.MOUNT.Declination
 
+    #2018.01.14 JU: SOMETIMES THE MOUNT NEVER MOVES AT ALL; SEEMS TO DEPEND ON GOTO BETWEEN CERTAIN LOCATIONS;
     while vState.MOUNT.Slewing:
        LogStatusShort(vState)
        time.sleep(1)    #wait until the slew is done
@@ -6367,12 +6383,14 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     # seen the mount get confused and fail to slew if CMOS problem.
     if abs(dRA_diffJ) > 1 and abs(dRA_diffJ) < 23:
         Error("! SLEW FAILED TO REACH DESIRED RA")
-        SafetyPark(vState)
-        raise SoundAlarmError,'Slew failed to reach desired RA'
+        return 1     #Problem!
+        #SafetyPark(vState)
+        #raise SoundAlarmError,'Slew failed to reach desired RA'
     if abs(dDec_diffJ) > 15:
         Error("! SLEW FAILED TO REACH DESIRED DEC")
-        SafetyPark(vState)
-        raise SoundAlarmError,'Slew failed to reach desired Dec'
+        return 1     #Problem!
+        #SafetyPark(vState)
+        #raise SoundAlarmError,'Slew failed to reach desired Dec'
 
     #!! Check for excessive movement after mount says it stopped
     maxExtend = 60  #max we can extend this delay if we see movement
@@ -6393,7 +6411,6 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
        delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (DiffDec * DiffDec)) * 60    #//arcminutes
        Log2(4,"Moved while stationary? %5.2f arcmin (%5.2f,%5.2f)" % (delta,DiffRAdeg,DiffDec))
        if delta > 0.05:      #threshold to detect still moving (may need to readjust this)
-           #Log2(0,"Excessive motion detected after slew!")
            Log2(0,"Excessive motion detected after slew! %5.2f arcmin" % (delta))
            if maxExtend > 0:
                maxExtend -= 1
@@ -6412,7 +6429,7 @@ def GOTO(desiredScopePos,vState,name=""):     #coordinates in decimal J2000 coor
     Log2(4,"vState.gotoPosition.isValid set to TRUE")
     Log2(5,"vState.gotoPosition = " + vState.gotoPosition.dump() )
 
-    return False #OK
+    return 0 #OK
 
 #=====================================================================================
 #Wide_Cat_Count_Single,		       <targetID>[, <repeat>, <exp-secs>]

@@ -877,8 +877,8 @@ class Position:
        ret = "\n"
        if not self.isValid:
           ret += "[NOT VALID] "
-       raJNow,decJNow   = getJNowString(self)
-       raJ2000,decJ2000 = getJ2000String(self)
+       raJNow,decJNow   = self.getJNowString()
+       raJ2000,decJ2000 = self.getJ2000String()
        ret +=  "Position dump:\n"
        ret += "Name:  %s\n" % (self.posName)
        ret += "J2000: %s  %s\n" % (raJ2000, decJ2000)
@@ -889,8 +889,8 @@ class Position:
        ret = "\n"
        if not self.isValid:
           return ("THIS OBJECT IS NOT VALID!","THIS OBJECT IS NOT VALID!")
-       raJNow,decJNow   = getJNowString(self)
-       raJ2000,decJ2000 = getJ2000String(self)
+       raJNow,decJNow   = self.getJNowString()
+       raJ2000,decJ2000 = self.getJ2000String()
 
        # Catalog Lookup    RA--JNow--Dec       RA--J2000--Dec  Name: ssssssss
        #                 00:00:00 +00:00:00  00:00:00 +00:00:00
@@ -902,8 +902,8 @@ class Position:
        ret = "\n"
        if not self.isValid:
           return "THIS OBJECT IS NOT VALID!"
-       raJNow,decJNow   = getJNowString(self)
-       raJ2000,decJ2000 = getJ2000String(self)
+       raJNow,decJNow   = self.getJNowString()
+       raJ2000,decJ2000 = self.getJ2000String()
 
        # Catalog Lookup    RA--JNow--Dec       RA--J2000--Dec    Name:     ssssssss
        #                 00:00:00 +00:00:00  00:00:00 +00:00:00
@@ -916,13 +916,18 @@ class Position:
         #Ex. 12.51234,-23.97654
         #epoch = ephem.J2000 or ephem.now()  [if not ephem.J2000 it ASSUMES ephem.now(); don't use any other epochs]
         #Future enhancement: support for 'B1900', 'B1950'
+        #print "*** setDecimal called with:",dhRA,ddDec,epoch,name
         self.orig_epoch = epoch
         if epoch == ephem.J2000:
             self.__posJ2000 = ephem.Equatorial(hours2rad(dhRA),deg2rad(ddDec),epoch=ephem.J2000)
+            #print "ephem J2000:   ",self.__posJ2000.ra,self.__posJ2000.dec
             self.__posJNow  = ephem.Equatorial(self.__posJ2000,epoch=ephem.now())
+            #print "converted JNow:",self.__posJNow.ra,self.__posJNow.dec
         else:
             self.__posJNow = ephem.Equatorial(hours2rad(dhRA),deg2rad(ddDec),epoch=ephem.now())
+            #print "ephem JNow:     ",self.__posJNow.ra,self.__posJNow.dec
             self.__posJ2000 = ephem.Equatorial(self.__posJNow,epoch=ephem.J2000)
+            #print "converted J2000:",self.__posJ2000.ra,self.__posJ2000.dec
         if name == None:    self.posName = None
         else:               self.posName = name
         if ptype == None:   self.posType = cTypeUnknown
@@ -933,13 +938,18 @@ class Position:
         #Input coords are strings: RA is hours:minutes:seconds, Dec is degrees:minutes:seconds
         #Ex: '12:34:56','-89:11:22'
         #epoch = ephem.J2000 or ephem.now()  [if not ephem.J2000 it ASSUMES ephem.now(); don't use any other epochs]
+        #print "***setString called with:",shRA,sdDec,epoch,name
         self.orig_epoch = epoch
         if epoch == ephem.J2000:
             self.__posJ2000 = ephem.Equatorial(shRA,sdDec,epoch=ephem.J2000)
+            #print "ephem J2000:   ",self.__posJ2000.ra,self.__posJ2000.dec
             self.__posJNow  = ephem.Equatorial(self.__posJ2000,epoch=ephem.now())
+            #print "converted JNow:",self.__posJNow.ra,self.__posJNow.dec
         else:
             self.__posJNow = ephem.Equatorial(shRA,sdDec,epoch=ephem.now())
+            #print "ephem JNow:",self.__posJNow.ra,self.__posJNow.dec
             self.__posJ2000 = ephem.Equatorial(self.__posJNow,epoch=ephem.J2000)
+            #print "converted J2000:",self.__posJ2000.ra,self.__posJ2000.dec
         if name == None:    self.posName = None
         else:               self.posName = name
         if ptype == None:   self.posType = cTypeUnknown
@@ -953,16 +963,20 @@ class Position:
     #   string degrees (ex '-89:12:34')   sdDec***      sdDecJ2000 or sdDecJNow
 
     def setJ2000Decimal(self,dhRAJ2000,ddDecJ2000,name=None,ptype=None): ##Decimal coords input
-        setDecimal(self,dhRAJ2000,ddDecJ2000,ephem.J2000,name,ptype)
+        self.setDecimal(dhRAJ2000,ddDecJ2000,ephem.J2000,name,ptype)
 
     def setJ2000String(self,shRAJ2000,sdDecJ2000,name=None,ptype=None):
-        setString(self,shRAJ2000,sdDecJ2000,ephem.J2000,name,ptype)
+        #print "setJ2000String",shRAJ2000,sdDecJ2000
+        try:
+            self.setString(shRAJ2000,sdDecJ2000,ephem.J2000,name,ptype)
+        except Exception,e:
+            print str(e)
 
     def setJNowDecimal(self,dhRAJNow,ddDecJNow,name=None,ptype=None):
-        setDecimal(self,dhRAJNow,ddDecJNow,ephem.now(),name,ptype)
+        self.setDecimal(dhRAJNow,ddDecJNow,ephem.now(),name,ptype)
 
     def setJNowString(self,shRAJNow,sdDecJNow,name=None,ptype=None):
-        setString(self,shRAJNow,sdDecJNow,ephem.now(),name,ptype)
+        self.setString(shRAJNow,sdDecJNow,ephem.now(),name,ptype)
 
     def getJ2000Decimal(self):  #returns decimal hours, decimal degrees, epoch J2000
         return(rad2hours(self.__posJ2000.ra), rad2deg(self.__posJ2000.dec))
@@ -2131,6 +2145,7 @@ def LookupObject( target):
                 sRA = tup[1]        #yes we want [1] here, [0] is the star ID field
                 sDec = tup[2]
                 sao.close()
+                print "1-What do I have here:",sRA,sDec,line
                 pos.setJ2000String(sRA,sDec,target,cTypeCatalog)
                 msgs = pos.dump2()
                 Log2(6,msgs[0])
@@ -2235,6 +2250,7 @@ def LookupObject( target):
         return pos
 
     else:
+        print "Check MiniSAC"
         #assume can feed this to MiniSAC catalog
         #print "Connect: MiniSAC.Catalog"
         cleanTarget = catalogID_cleaner(target)  #breaks up into catalog ("M") and number ("1") with a space between them
@@ -2257,9 +2273,11 @@ def LookupObject( target):
             else:
                 sRA = cat.RightAscension
                 sDec = cat.Declination
-                pos.setJ2000String(sRA,sDec,target,cTypeCatalog)
+                print "2-What do I have here:",sRA,sDec
+                pos.setJ2000Decimal(sRA,sDec,target,cTypeCatalog)
 
         except:
+            print "DO NOT USE THIS FEATURE; IT WAS AUTOMATED TARGET SELECTION; NO LONGER POPULATED SO IT WILL NOT DO ANYTHING"
             #other last resort (if exception thrown above), try spreadsheet info
             try:
                 dRA,dDec = MasterCoords[cleanTarget]
@@ -3687,7 +3705,8 @@ def rad2hours(rad):
 def rad2deg(rad):
     return rad * (180./math.pi)
 
-def Cleanup(str):   #remove trailing decimal part from ephem.Angle string
+def Cleanup(astr):   #remove trailing decimal part from ephem.Angle string
+    str = "%s" % astr
     pos = str.find('.')
     if pos < 0:
         return str
@@ -6640,7 +6659,6 @@ def LoadList( CommandFilename, cmdList ):
 def ValidateList( theList ):
     Log2(0,"Validate targets against catalog:")
     for line in theList:
-
         if line[:9].upper() == "AUTOUNTIL":
             global gSurveyCommandPresent
             gSurveyCommandPresent = True
@@ -8743,6 +8761,7 @@ def CheckApproxHorizon(dTargetRA,vState):
 
 #--------------------------------------------------------------------------------------------------------
 def PrepareTargetList(vState):
+    print "PrepareTargetList"
     if not gSurveyCommandPresent:
         Log2(0,"Skip loading TargetList because no survey commands present")
         return
@@ -13229,7 +13248,7 @@ def CheckPrepareRun():
 #-#####
 # The script starts here
 #-######
-print "Remember: run eserver.py first if want to receive realtime updates of program state"
+#print "Remember: run eserver.py first if want to receive realtime updates of program state"
 
 #SendToServer(getframeinfo(currentframe()),"========= Startup ===========")
 

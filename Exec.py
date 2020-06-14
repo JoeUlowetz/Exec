@@ -529,7 +529,7 @@ class cState:
         #During guiding, if the scope position moves by more than this amount (arcmin) from
         # the initial GOTO position, then stop the current exposure and reacquire target;
         # we have robably lost the guide star.
-        self.driftThreshold = 5.0   #was 4.0
+        self.driftThreshold = 6.0   #was 5.0   #was 4.0     Changed to 6.0 on 2019.03.05 JU
         self.gotoPosition = Position()
         self.gotoPosition.isValid = False
 
@@ -894,8 +894,8 @@ class Position:
 
        # Catalog Lookup    RA--JNow--Dec       RA--J2000--Dec  Name: ssssssss
        #                 00:00:00 +00:00:00  00:00:00 +00:00:00
-       line0 = " Cat Lkp    RA--JNow--Dec       RA--J2000--Dec  Name:"
-       line1 = " %s %s  %s %s    %s" % (raJNow, decJNow, raJ2000, decJ2000, self.posName)
+       line0 = " Cat Lkp    RA--JNow--Dec       RA--J2000--Dec      Name:"
+       line1 = "          %s %s  %s %s    %s" % (raJNow, decJNow, raJ2000, decJ2000, self.posName)
        return (line0,line1)
 
     def dump3(self):  #returns strings that can be printed in target log
@@ -1581,6 +1581,13 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
             diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
             DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
             delta = math.sqrt((DiffRAdeg * DiffRAdeg) + (diffDec * diffDec)) * 60   #arcmin
+            
+            #I found a formula to do this:
+            #Given coord pair (ra1,dec1) and pair (ra2,dec2), then the angular distance between the coord are:
+            #   cos(result) = (sin(dec1) * sin(dec2)) + cos(dec1) * cos(dec2) * sin(ra1 - ra2)
+            #Where all coords are given in RADIANS (RA is not Hours, it is angle)
+            #I found this: physics.stackexchange.com/questions/224950/how-can-i-convert-right-ascension-and-declination-to-distances
+            
 
             #WHY did I think I needed this? Because sometimes guiding thinks it is working
             # but we are just looking at noise and not actually tracking the guide star.
@@ -1594,38 +1601,24 @@ def LogStatus( vState, sourceNum ):  #write out frequent status info to special 
             # even if not guiding!!!
             if delta > vState.driftThreshold:
                 #PROBLEM
-                print 90
                 Error("Position exceeded drift threshold (%d)=======================================" % sourceNum)
-                print 91
                 Log2(1,"delta = %5.2f, threshold = %5.2f arcmin" % (delta, vState.driftThreshold))
-                print 92
                 Log2(2,"Where we want to be:")
-                print 93
                 line0,line1 = vState.gotoPosition.dump2()
                 Log2(3,line0)
                 Log2(3,line1)
-                print 94
                 Log2(2,"Where the mount says we currently are:")
-                print 95
                 line0,line1 = nowPos.dump2()
                 Log2(3,line0)
                 Log2(3,line1)
 
-                print 1,diffRA, diffDec, DiffRAdeg,delta
                 Log2(2,"Goto position:")
-                print 2
                 Log2(3,vState.gotoPosition.dump())
-                print 3
                 Log2(2,"NowPos position:")
-                print 4
                 Log2(3,nowPos.dump())
-                print 5
-                print nowPos.dRA_JNow()
-                print nowPos.dDec_JNow()
-                print "Raw current coords from mount:"
-                print vState.MOUNT.RightAscension,vState.MOUNT.Declination
-                print "----------------------------------------"
-                #TEMP DISABLE THIS, ONLY LOG IT
+
+                #To disable this feature, comment out the return True statement
+#2019.03.19 JU: this problem happened again (ST LMi this time) so disable again
                 #return True
 
        except:
@@ -4521,7 +4514,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
 
     Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
     if numImageStars < 10:  #ADJUST THIS
-        Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
+        Log2Summary(1,"AN C=" + str(camera) + " less than 10 stars in image; skip calling Astrometry.net")
         Log2(2, "vvvvvvvvvv")
         Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
@@ -4538,7 +4531,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         t.join(600)  #if it takes more than 10 minutes, stop and disable this feature so normal logic can run instead
         Log2(2,"Checking thread result:")
         if t.is_alive():
-            Log2(2,"THREAD IS NOT DONE; ***DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG***")
+            Log2(0,"THREAD IS NOT DONE; ***DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG***")
             vState.AstrometryNet = 0
             Log2Summary(0,"DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG")
             #NOTE: we abandon the thread; we don't try to do a final join() because the thread appears to be hung
@@ -4546,7 +4539,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         else:
             Log2(2,"Thread completed normally")
         t.join()    #final join() to make sure fully done
-        Log2(2,"Final join returned as expected")
+        Log2(2,"Final thread join returned as expected")
 
         Log2(0,"Msg: " + AstrometryResult[4])
         Log2(0,"Status: %d" % AstrometryResult[5])
@@ -4760,8 +4753,8 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     pp.TargetRightAscension = pp.RightAscension
     pp.TargetDeclination = pp.Declination
 
-    Log2(4,"RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
-    Log2(4,"Dec = %s" % DegreesToDMS(pp.Declination))
+    Log2(4,"J2000 RA = %s" % UTIL.HoursToHMS(pp.RightAscension,":",":","",1))
+    Log2(4,"J2000 Dec = %s" % DegreesToDMS(pp.Declination))
     pp.TracePath = r"C:\temp"
     pp.TraceLevel = trace
 
@@ -4821,6 +4814,10 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
     #pp.CatalogPath = r"C:\Catalog"
     Log2(4,"pp.CatalogMaximumMagnitude = %f" % pp.CatalogMaximumMagnitude)
     Log2(4,"pp.MaxSolveTime= %d" % pp.MaxSolveTime)
+    try:
+        Log2(4,"pp.FileName = %s" % pp.FileName)
+    except:
+        Log2(4,"filename did not work")
     #using PP 2.0 may need image to be calibrated first to avoid false positives!
     #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -4836,6 +4833,9 @@ def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState 
 
     Log2(0,msg)
 
+    if bSolve:
+       Log2(0, MultiPPSolve.DisplaySolveCountStr() )
+        
     end = time.time()
     #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     if not bSolve:
@@ -7062,6 +7062,11 @@ def execArchive(t,vState):
         vState.SQLITE.close()
         vState.SQLITE = None
 
+    try:
+        Log2(0, MultiPPSolve.DisplaySolveCountStr() )
+    except:
+        pass
+        
     Log2(0,"About to run __FinishSession.bat")
     from subprocess import Popen
     p = Popen(r"C:\fits_script\__FinishSession.bat")

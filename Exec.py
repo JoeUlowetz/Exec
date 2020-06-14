@@ -8,6 +8,7 @@ BASE = r"C:\Users\W510\Documents"
 BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 
 Observatory_Database = "C:/fits_script/exec_db.db"
+Master_Database = "C:/fits_script/Master_db.db"
 
 
 #================================================================================
@@ -644,7 +645,8 @@ class cState:
 
         #SQLite3 connection
         self.SQLITE = sqlite3.connect( Observatory_Database )
-        imaging_db.SqliteStartup( self.SQLITE, 'Exec5D' )    #record start of prgm in Startup table of database
+        self.SQMASTER = sqlite3.connect( Master_Database )
+        imaging_db.SqliteStartup( self.SQMASTER, 'Exec5D-startup' )    #record start of prgm in Startup table of database
         #To get cursor later on:
         #   cur = vState.SQLITE.cursor()
         
@@ -7095,6 +7097,8 @@ def execArchive(t,vState):
     print "stdout:", stdout
     print "stderr:",stderr
     Log2(0,"Completed running __FinishSession.bat")
+    if vState.SQMASTER is not None:
+        imaging_db.SqliteStartup( vState.SQMASTER, 'Exec5D-shutdown' )  
     return (0,)
 
 #--------------------------------

@@ -253,6 +253,8 @@ import MultiPPSolve #added 2019.01.01 JU
 
 import inspect      #added 2019.06.11 JU to add new feature: dumpCallStack()
 
+import urllib       #added 2019.12.15 JU to get current sky info from RPi/Weathershield hardware
+
 #Exec4n.py 2015.12.13    DISABLED 2018.09.02
 #import socket
 #from inspect import currentframe, getframeinfo
@@ -2171,9 +2173,12 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
       fSidereal = 0.
       velocity = '?'
       home     = '?'
+      status = 0
       outStatus   = '??????'
       tracking = '999'
+      handctrl = '?'        #added 2019.12.11 JU
       gdspeed = '???'
+      RAMove =  '?'
 
    try:
         msgGuider = vState.CAMERA.LastGuiderError
@@ -3347,7 +3352,7 @@ def StopGuiding(vState):
     ###ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
     ret = vState.CAMERA.GuiderStop
     #Returns true if successful. This is calling a method without parameters, so no parens after it!
-    
+
 
     #REWRITE THE ABOVE TO CAPTURE STANDARD OUTPUT!!!!!!!!!!!!!!!!
 
@@ -7065,6 +7070,58 @@ def ExecuteList( theList ):
     print "!!! DONE"
 
 #--------------------------------------------------------------------------------------------------------
+def CheckIfCloudy():
+    #this calls GetWeathershieldInfo() and returns True if it appears to be cloudy, else False
+    #call this function for consistency with the setting to use for checking if cloudy
+    #Normally, when this function is called and returns True, then raise WeatherError exception
+    tup = GetWeathershieldInfo()
+    if tup[0]:
+        if tup[3] > -10.0:      #Rule for cloudy (for now): if sky temp diff warmer than -10C
+            return True
+    return False
+    
+#--------------------------------------------------------------------------------------------------------
+def GetWeathershieldInfo():
+    #Returns ( False, ) if no data, or (True,airTemp,skyTemp,skyDiff)
+    #   Air2:-7.1C
+    #   IR:-27.3C
+    #   Diff:-20.2C
+    
+    if not UseWeathershieldFlag():
+        Log2(4,"UseWeathershield is disabled")
+        return (False,)
+    try:
+        link = "http://192.168.1.31/raw_temperature.html"
+        f = urllib.urlopen(link)
+        myfile = f.read()
+        #print(myfile)
+        ind_1a = myfile.find("<h3>Air2:")
+        ind_1b = myfile.find("</h3>",ind_1a)
+        field1 = myfile[ind_1a+9:ind_1b]
+        
+        ind_2a = myfile.find("<h3>IR:")
+        ind_2b = myfile.find("</h3>",ind_2a)
+        field2 = myfile[ind_2a+7:ind_2b]
+
+        ind_3a = myfile.find("<h3>Diff:")
+        ind_3b = myfile.find("</h3>",ind_3a)
+        field3 = myfile[ind_3a+9:ind_3b]
+        
+        Log2(4,"Weathershield info: %s, %s, %s" % (field1,field2,field3))
+        return (True,float(field1[:-2]),float(field2[:-2]),float(field3[:-2]))
+        
+    except Exception,e:
+        Log2(3,"Call to GetWeathershieldInfo is not working")
+        print str(e)
+        return (False,) #no info
+
+    #lookup curl equivalent in Python.
+    #curl(192.168.1.31:raw_temperature.html), timeout 2 seconds?
+    #if timeout: return (False,)
+    #parse out lines
+    #get series of values
+    #return (true,airTemp,skyTemp,skyDiff,sunAltitude)
+#--------------------------------------------------------------------------------------------------------
 def Process( Line, vState ):
     # Line = actual command to process; comments were stripped out before calling here
 
@@ -7074,83 +7131,85 @@ def Process( Line, vState ):
     action_list = [      #commands that result in actions
         # *** ENTRIES HERE MUST BE ALL CAPITAL LETTERS ***
         # CmdName        Function for Cmd     RerunIfCloudy (eg skip 'stationary' steps)
-        ("AUTOFOCUS",    execAutoFocus,             1),
-        ("CATFOCUSNEAR", execCatFocusNear,          1),
-        ("CATFOCUS",     execCatFocus,              1),
-        ("FOCUSNEAR",    execNearAutoFocus,         0), #scope parked if cloudy so no 'near' object in parked position
-        ("FOCUS",        execFocus,                 1),
-        ("PARK",         execPark,                  0),
-        ("DARKS",        execDarks,                 0),
-        ("CROPDARKS",    execCropDarks,             0),
-        ("BIAS",         execBias,                  0),
-        ("CROPBIAS",     execCropBias,              0),
-        ("FLATS",        execFlats,                 0),
-        ("WAITUNTIL",    execWaitUntil,             0),
-        ("CATGOTO",      execCatGoto,               0),      #Not implemented yet
-        ("CoolerOff",    execCoolerOff,             0),
-        ("CoolerOn",     execCoolerOn,              0),
-        ("ARCHIVE",      execArchive,               0),      #2011.07.30: runs __FinishSession.bat
-        ("WAITFORDARK",        execWaitForDark,     0),      #2012.09.16 added feature
-        ("DUMPSTATE",          execDumpState,       0),
-        ("AUTOUNTIL",          execAutoUntil,       1),  #This is the 'survey' command!
-        ("LW_MOSAIC",          execMosaicLW,        1),
-        ("LN_MOSAIC",          execMosaicLN,        1),
-        ("C_MOSAIC",           execMosaicC,         1),
+        #                                                 Check weather before running this step
+        ("AUTOFOCUS",    execAutoFocus,             1,     1),
+        ("CATFOCUSNEAR", execCatFocusNear,          1,     1),
+        ("CATFOCUS",     execCatFocus,              1,     1),
+        ("FOCUSNEAR",    execNearAutoFocus,         0,     1), #scope parked if cloudy so no 'near' object in parked position
+        ("FOCUS",        execFocus,                 1,     1),
+        ("PARK",         execPark,                  0,     0),
+        ("DARKS",        execDarks,                 0,     0),
+        ("CROPDARKS",    execCropDarks,             0,     0),
+        ("BIAS",         execBias,                  0,     0),
+        ("CROPBIAS",     execCropBias,              0,     0),
+        ("FLATS",        execFlats,                 0,     0),
+        ("WAITUNTIL",    execWaitUntil,             0,     0),
+        ("CATGOTO",      execCatGoto,               0,     0),      #Not implemented yet
+        ("CoolerOff",    execCoolerOff,             0,     0),
+        ("CoolerOn",     execCoolerOn,              0,     0),
+        ("ARCHIVE",      execArchive,               0,     0),      #2011.07.30: runs __FinishSession.bat
+        ("WAITFORDARK",        execWaitForDark,     0,     0),      #2012.09.16 added feature
+        ("DUMPSTATE",          execDumpState,       0,     0),
+        ("AUTOUNTIL",          execAutoUntil,       1,     1),  #This is the 'survey' command!
+        ("LW_MOSAIC",          execMosaicLW,        1,     1),
+        ("LN_MOSAIC",          execMosaicLN,        1,     1),
+        ("C_MOSAIC",           execMosaicC,         1,     1),
+        ("WAIT4CLEAR",  execWait4Clear,             1,     0), #2019.12.16 JU new feature using Weathershield
 
-        ("MeasureGuideScopeOffset",           exec_MeasureGuideScopeOffset,        1),
+        ("MeasureGuideScopeOffset",           exec_MeasureGuideScopeOffset,        1,     1),
 
 
-        ("Wide_Cat_Count_Single",             exec_Wide_Cat_Count_Single,          1),
-        ("Wide_Cat_EndTime_Single",           exec_Wide_Cat_EndTime_Single,        1),
+        ("Wide_Cat_Count_Single",             exec_Wide_Cat_Count_Single,          1,     1),
+        ("Wide_Cat_EndTime_Single",           exec_Wide_Cat_EndTime_Single,        1,     1),
 
-        ("Wide_JNow_Count_Single",            exec_Wide_JNow_Count_Single,         1),
-        ("Wide_JNow_EndTime_Single",          exec_Wide_JNow_EndTime_Single,       1),
+        ("Wide_JNow_Count_Single",            exec_Wide_JNow_Count_Single,         1,     1),
+        ("Wide_JNow_EndTime_Single",          exec_Wide_JNow_EndTime_Single,       1,     1),
 
-        ("Wide_J2000_Count_Single",           exec_Wide_J2000_Count_Single,        1),
-        ("Wide_J2000_EndTime_Single",         exec_Wide_J2000_EndTime_Single,      1),
+        ("Wide_J2000_Count_Single",           exec_Wide_J2000_Count_Single,        1,     1),
+        ("Wide_J2000_EndTime_Single",         exec_Wide_J2000_EndTime_Single,      1,     1),
 
-        ("Wide_Stationary_Count_Single",      exec_Wide_Stationary_Count_Single,   0),
-        ("Wide_Stationary_EndTime_Single",    exec_Wide_Stationary_EndTime_Single, 0),
+        ("Wide_Stationary_Count_Single",      exec_Wide_Stationary_Count_Single,   0,     1),
+        ("Wide_Stationary_EndTime_Single",    exec_Wide_Stationary_EndTime_Single, 0,     1),
 
-        ("Narrow_Cat_Count_Sequence",         exec_Narrow_Cat_Count_Sequence,      1),
-        ("Narrow_Cat_Count_Single",           exec_Narrow_Cat_Count_Single,        1),
-        ("Narrow_Cat_EndTime_Sequence",       exec_Narrow_Cat_EndTime_Sequence,    1),
-        ("Narrow_Cat_EndTime_Single",         exec_Narrow_Cat_EndTime_Single,      1),
+        ("Narrow_Cat_Count_Sequence",         exec_Narrow_Cat_Count_Sequence,      1,     1),
+        ("Narrow_Cat_Count_Single",           exec_Narrow_Cat_Count_Single,        1,     1),
+        ("Narrow_Cat_EndTime_Sequence",       exec_Narrow_Cat_EndTime_Sequence,    1,     1),
+        ("Narrow_Cat_EndTime_Single",         exec_Narrow_Cat_EndTime_Single,      1,     1),
 
-        ("Narrow_JNow_Count_Sequence",        exec_Narrow_JNow_Count_Sequence,     1),
-        ("Narrow_JNow_Count_Single",          exec_Narrow_JNow_Count_Single,       1),
-        ("Narrow_JNow_EndTime_Sequence",      exec_Narrow_JNow_EndTime_Sequence,   1),
-        ("Narrow_JNow_EndTime_Single",        exec_Narrow_JNow_EndTime_Single,     1),
+        ("Narrow_JNow_Count_Sequence",        exec_Narrow_JNow_Count_Sequence,     1,     1),
+        ("Narrow_JNow_Count_Single",          exec_Narrow_JNow_Count_Single,       1,     1),
+        ("Narrow_JNow_EndTime_Sequence",      exec_Narrow_JNow_EndTime_Sequence,   1,     1),
+        ("Narrow_JNow_EndTime_Single",        exec_Narrow_JNow_EndTime_Single,     1,     1),
 
-        ("Narrow_J2000_Count_Sequence",       exec_Narrow_J2000_Count_Sequence,    1),
-        ("Narrow_J2000_Count_Single",         exec_Narrow_J2000_Count_Single,      1),
-        ("Narrow_J2000_EndTime_Sequence",     exec_Narrow_J2000_EndTime_Sequence,  1),
-        ("Narrow_J2000_EndTime_Single",       exec_Narrow_J2000_EndTime_Single,    1),
+        ("Narrow_J2000_Count_Sequence",       exec_Narrow_J2000_Count_Sequence,    1,     1),
+        ("Narrow_J2000_Count_Single",         exec_Narrow_J2000_Count_Single,      1,     1),
+        ("Narrow_J2000_EndTime_Sequence",     exec_Narrow_J2000_EndTime_Sequence,  1,     1),
+        ("Narrow_J2000_EndTime_Single",       exec_Narrow_J2000_EndTime_Single,    1,     1),
 
-        ("Narrow_Stationary_Count_Sequence",  exec_Narrow_Stationary_Count_Sequence, 0),
-        ("Narrow_Stationary_Count_Single",    exec_Narrow_Stationary_Count_Single,   0),
-        ("Narrow_Stationary_EndTime_Sequence",exec_Narrow_Stationary_EndTime_Sequence, 0),
-        ("Narrow_Stationary_EndTime_Single",  exec_Narrow_Stationary_EndTime_Single,  0),
+        ("Narrow_Stationary_Count_Sequence",  exec_Narrow_Stationary_Count_Sequence, 0,     1),
+        ("Narrow_Stationary_Count_Single",    exec_Narrow_Stationary_Count_Single,   0,     1),
+        ("Narrow_Stationary_EndTime_Sequence",exec_Narrow_Stationary_EndTime_Sequence, 0,     1),
+        ("Narrow_Stationary_EndTime_Single",  exec_Narrow_Stationary_EndTime_Single,  0,     1),
 #Cropped:
-        ("Cropped_Cat_Count_Sequence",         exec_Cropped_Cat_Count_Sequence,      1),
-        ("Cropped_Cat_Count_Single",           exec_Cropped_Cat_Count_Single,        1),
-        ("Cropped_Cat_EndTime_Sequence",       exec_Cropped_Cat_EndTime_Sequence,    1),
-        ("Cropped_Cat_EndTime_Single",         exec_Cropped_Cat_EndTime_Single,      1),
+        ("Cropped_Cat_Count_Sequence",         exec_Cropped_Cat_Count_Sequence,      1,     1),
+        ("Cropped_Cat_Count_Single",           exec_Cropped_Cat_Count_Single,        1,     1),
+        ("Cropped_Cat_EndTime_Sequence",       exec_Cropped_Cat_EndTime_Sequence,    1,     1),
+        ("Cropped_Cat_EndTime_Single",         exec_Cropped_Cat_EndTime_Single,      1,     1),
 
-        ("Cropped_JNow_Count_Sequence",        exec_Cropped_JNow_Count_Sequence,     1),
-        ("Cropped_JNow_Count_Single",          exec_Cropped_JNow_Count_Single,       1),
-        ("Cropped_JNow_EndTime_Sequence",      exec_Cropped_JNow_EndTime_Sequence,   1),
-        ("Cropped_JNow_EndTime_Single",        exec_Cropped_JNow_EndTime_Single,     1),
+        ("Cropped_JNow_Count_Sequence",        exec_Cropped_JNow_Count_Sequence,     1,     1),
+        ("Cropped_JNow_Count_Single",          exec_Cropped_JNow_Count_Single,       1,     1),
+        ("Cropped_JNow_EndTime_Sequence",      exec_Cropped_JNow_EndTime_Sequence,   1,     1),
+        ("Cropped_JNow_EndTime_Single",        exec_Cropped_JNow_EndTime_Single,     1,     1),
 
-        ("Cropped_J2000_Count_Sequence",       exec_Cropped_J2000_Count_Sequence,    1),
-        ("Cropped_J2000_Count_Single",         exec_Cropped_J2000_Count_Single,      1),
-        ("Cropped_J2000_EndTime_Sequence",     exec_Cropped_J2000_EndTime_Sequence,  1),
-        ("Cropped_J2000_EndTime_Single",       exec_Cropped_J2000_EndTime_Single,    1),
+        ("Cropped_J2000_Count_Sequence",       exec_Cropped_J2000_Count_Sequence,    1,     1),
+        ("Cropped_J2000_Count_Single",         exec_Cropped_J2000_Count_Single,      1,     1),
+        ("Cropped_J2000_EndTime_Sequence",     exec_Cropped_J2000_EndTime_Sequence,  1,     1),
+        ("Cropped_J2000_EndTime_Single",       exec_Cropped_J2000_EndTime_Single,    1,     1),
 
-        ("Cropped_Stationary_Count_Sequence",  exec_Cropped_Stationary_Count_Sequence,  0),
-        ("Cropped_Stationary_Count_Single",    exec_Cropped_Stationary_Count_Single,    0),
-        ("Cropped_Stationary_EndTime_Sequence",exec_Cropped_Stationary_EndTime_Sequence,0),
-        ("Cropped_Stationary_EndTime_Single",  exec_Cropped_Stationary_EndTime_Single,  0)
+        ("Cropped_Stationary_Count_Sequence",  exec_Cropped_Stationary_Count_Sequence,  0,     1),
+        ("Cropped_Stationary_Count_Single",    exec_Cropped_Stationary_Count_Single,    0,     1),
+        ("Cropped_Stationary_EndTime_Sequence",exec_Cropped_Stationary_EndTime_Sequence,0,     1),
+        ("Cropped_Stationary_EndTime_Single",  exec_Cropped_Stationary_EndTime_Single,  0,     1)
 
 
         ]
@@ -7220,13 +7279,19 @@ def Process( Line, vState ):
         ##
         ## Action command processing
         ##
-        for (cmd,fn,rerun) in action_list:
+        for (cmd,fn,rerun,bWeatherCheck) in action_list:
             upCmd = cmd.upper()
             if cmdField == upCmd:
                 #we found the specified command to get its impl function to call
                 Log2(0," ")
                 Log2(0,"*** Execute Command: %s" % (Line))
-                #Log2(1,"Filter = %d" % vState.CAMERA.Filter)
+                
+                #2019.12.16 JU: first check sun altitude, and weathershield
+                if TestSunAltitude(-6):
+                    Log2(0,"Sun too high to execute another command")
+                    continue
+                if bWeatherCheck:           #only check weather for certain types of commands
+                    execWait4Clear1(vState)  #this holds current action until it is clear, or sunrise
 
                 tup = tuple(Line.split(','))
                 # 2010.05.19 JU: trim whitespace from all parameter fields
@@ -7281,8 +7346,38 @@ def Process( Line, vState ):
                                 tret = (1,)
                                 break
 
-                            #Wait half an hour
-                            execUseful30MinuteDelay(vState)
+#TODO: add check of GetWeathershieldInfo() in all/important imaging steps, so it comes here as soon as cloudy, not after series of PP solve failures
+                                
+                            #New logic using Weathershield data via web connection: 2019.12.10 JU
+                            if bWeatherCheck:   #only check weather for certain commands
+                                result = GetWeathershieldInfo()     #result = tuple( false, ) if no data, or (true,airTemp,skyTemp,skyDiff,sunAltitude)
+                                if result[0]:
+                                    #weathershield info available:
+                                    #  [1]=airTemp, [2]=skyTemp, [3]=skyDiff
+                                    bSkipCommand = False    #this used if sun is too high and we want to fully skip current step
+                                    while result[0]:
+                                        if TestSunAltitude(-6):
+                                            Error("Sun altitude too high for retry of this command, in except WeatherError")
+                                            tret = (1,)
+                                            bSkipCommand = True
+                                            break
+                                        if result[3] > -10:     #warmer than -10C so still cloudy  [MAYBE ADJUST THIS THRESHOLD IN THE FUTURE?]
+                                            #execute 5 minute delay because still apparently cloudy
+                                            execUseful5MinuteDelay(vState)
+                                            pass
+
+                                        else:
+                                            #it might be clear at this point; let this step continue (we do NOT set bSkipCommand; we do NOT want to skip the current command, we want to retry it)
+                                            break
+
+                                        result = GetWeathershieldInfo()     #check latest Weathershield info to see if cleared up
+
+                                    if bSkipCommand:
+                                        break;      #this gets out of the retry loop for the current command, moving on to next command
+                                else:
+                                    #no Weathershield info, use normal delay and then attempt to resume imaging
+                                    #Wait half an hour
+                                    execUseful30MinuteDelay(vState)
 
                             #Turn mount back on before continuing!!!
                             if not vState.MOUNT.Connected:
@@ -7423,6 +7518,10 @@ def execCoolerOn(t,vState):
 ##        ("FOCUS",        execFocus),    #
 #  Focus,  <RA>, <Dec> [,<targetID>, <exp-secs>]
 def execFocus(t,vState):
+   if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execFocus")
+      return (0,)
+
    dic = {}
    dic["crop"]     = "no"
    dic["location"] = "RA/Dec"
@@ -7453,6 +7552,10 @@ def execAutoFocus(t,vState):
    #THIS IS CALLED FROM execAutoUntil SO IT IS PART OF SURVEY CODE; THIS
    #NEEDS TO BE REDESIGNED IN TERMS OF IMAGER OFFSET
 
+   if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execAutoFocus")
+      return (0,)
+
    #vState.ResetImagerOffset()   #forces positioning to center in guider
    dic = {}
    dic["crop"]     = "no"
@@ -7473,6 +7576,10 @@ def execAutoFocus(t,vState):
 #  CatFocus, <targetID> [,<exp-secs>]
 def execCatFocus(t,vState):
    #vState.ResetImagerOffset()   #forces positioning to center in guider
+   if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execCatFocus")
+      return (0,)
+
    dic = {}
    dic["crop"]     = "no"
    dic["location"] = "cat"
@@ -7489,6 +7596,10 @@ def execCatFocus(t,vState):
 #  CatFocusNear, <targetID> [,<exp-secs>]
 def execCatFocusNear(t,vState):
     #vState.ResetImagerOffset()   #forces positioning to center in guider
+    if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execCatFocusNear")
+      return (0,)
+
     dic = {}
     dic["crop"]     = "no"
     dic["location"] = "near"
@@ -7705,6 +7816,17 @@ def execUseful30MinuteDelay(vState):
     dic["bin"] = 2
     return implDarks(dic,vState)
 
+def execUseful5MinuteDelay(vState):
+    #to do: future enhancement: alternate different kinds of Dark/Bias/Cropped frames here
+    dic = {}
+    dic["crop"]  = "no"
+    dic["isSeq"] = "no"
+    dic["limit"] = "count"
+    dic["exp"] = 300
+    dic["repeat"] = 1
+    dic["bin"] = 2
+    return implDarks(dic,vState)
+
 #--------------------------------
 ##        ("BIAS",         execBias),     #
 #  BIAS, <repeat> [,<bin>]
@@ -7754,9 +7876,56 @@ def execFlats(t,vState):
     return implFlat(dic,vState)
 
 #--------------------------------
+def execWait4Clear1(vState):
+    result = GetWeathershieldInfo()
+    firstPark = True
+    while result[0]:
+        if TestSunAltitude(-6):
+            Log2(0,"Wait4Clear command stopped because sun is too high")
+            return (0,)
+        Log2(2,"Weathershield reports: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
+        if result[3] < -10.:
+            Log2(0,"Wait4Clear thinks it is clear")
+            return (0,)
+        if firstPark:
+            SafetyPark( vState )
+            firstPark = False
+        Log2(2,"It appears to be cloudy currently. Wait for it to clear up.")
+        Log2(3,"To disable this feature, edit C:/fits_script/UseWeathershield.txt")
+        execUseful5MinuteDelay(vState)
+        result = GetWeathershieldInfo()
+        
+    Log2(0,"Wait4Clear unable to get data from Weathershield")
+    return (0,)
+    
+#--------------------------------
+def UseWeathershieldFlag():
+    #This file controls whether the Exec8d.py script uses WeatherShield to decide if it is clear enough
+    #to image.  The first letter of this file must be Y or y or 1 in order to enable Weathershield logic.
+    #Any other letter there disables Weathershield logic and Exec8d.py reverts to old weather logic.
+    #This file can be edited while Exec8d.py is running, to dynamically change the setting.
+    try:
+        f = open("C:/fits_script/UseWeathershield.txt","r")
+        value = f.read()
+        f.close
+        if len(value) > 1 and (value[0] == 'Y' or value[0] == 'y' or value[0] == '1'):
+            return True
+    except:
+        Log2(0,"Unable to read file C:/fits_script/UseWeathershield.txt")
+    return False
+    
+#--------------------------------
+def execWait4Clear(t,vState):
+    return execWait4Clear1(vState)
+
+#--------------------------------
 ##        ("WAITUNTIL",    execWaitUntil),#
 #  WaitUntil,<hh:mm:ss>             #time in UTC
 def execWaitUntil(t,vState):
+   if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execWaitUntil")
+      return (0,)
+
    dic = {}
    dic["crop"]     = "no"
    dic["limit"]  = "time"
@@ -7890,6 +8059,10 @@ def SetGuiderExclude(offset,t,vState): #if optional arguments provided, restrict
 #Wide_Cat_Count_Single,	   <targetID>[, <repeat>, <exp-secs>]	#like CatWide
 #                              1           2           3         4
 def exec_Wide_Cat_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    #vState.ResetImagerOffset()   #forces positioning to center in guider
    dic = {}
@@ -7914,6 +8087,10 @@ def exec_Wide_Cat_Count_Single(t,vState):
 #Wide_Cat_EndTime_Single,	       <targetID>,<hh:mm:ss>[, <exp-secs>]	#like CatWideUntil/RunWideUntil
 #                                          1           2           3
 def exec_Wide_Cat_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    #vState.ResetImagerOffset()   #forces positioning to center in guider
 
@@ -7940,6 +8117,10 @@ def exec_Wide_Cat_EndTime_Single(t,vState):
 #Wide_JNow_Count_Single,           <RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>]
 #                                   1     2       3           4           5
 def exec_Wide_JNow_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -7966,6 +8147,10 @@ def exec_Wide_JNow_Count_Single(t,vState):
 #Wide_JNow_EndTime_Single,         <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>]
 #                                   1     2       3           4           5
 def exec_Wide_JNow_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -7992,6 +8177,10 @@ def exec_Wide_JNow_EndTime_Single(t,vState):
 #Wide_J2000_Count_Single,	   <RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>]	#like ExpWideJ2000
 #                                   1     2       3           4           5
 def exec_Wide_J2000_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    #vState.ResetImagerOffset()   #forces positioning to center in guider
    dic = {}
@@ -8019,6 +8208,10 @@ def exec_Wide_J2000_Count_Single(t,vState):
 #Wide_J2000_EndTime_Single,        <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>]
 #                                   1     2       3           4           5
 def exec_Wide_J2000_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8045,6 +8238,10 @@ def exec_Wide_J2000_EndTime_Single(t,vState):
 #Wide_Stationary_Count_Single,     <targetID>[, <repeat>, <exp-secs>]
 #                                      1           2           3
 def exec_Wide_Stationary_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8068,6 +8265,10 @@ def exec_Wide_Stationary_Count_Single(t,vState):
 #Wide_Stationary_EndTime_Single,   <targetID>,<hh:mm:ss>[, <exp-secs>]
 #                                      1           2           3
 def exec_Wide_Stationary_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8101,6 +8302,10 @@ def GetOptionalSequence(t,index,defSeq):
 #Narrow_Cat_Count_Sequence,  <targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                1           2           3             4
 def exec_Narrow_Cat_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8127,6 +8332,10 @@ def exec_Narrow_Cat_Count_Sequence(t,vState):
 #Cropped_Cat_Count_Sequence,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                               1           2              3          4
 def exec_Cropped_Cat_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8154,6 +8363,10 @@ def exec_Cropped_Cat_Count_Sequence(t,vState):
 #Narrow_Cat_Count_Single,         <targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2           3       4        5           6+0     6+1        6+2      6+3       6+4
 def exec_Narrow_Cat_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8182,6 +8395,10 @@ def exec_Narrow_Cat_Count_Single(t,vState):
 #Cropped_Cat_Count_Single,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                             1           2          3         4         5           6
 def exec_Cropped_Cat_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8211,6 +8428,10 @@ def exec_Cropped_Cat_Count_Single(t,vState):
 #Narrow_Cat_EndTime_Sequence,   <targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                   1           2           3              4
 def exec_Narrow_Cat_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8237,6 +8458,10 @@ def exec_Narrow_Cat_EndTime_Sequence(t,vState):
 #Cropped_Cat_EndTime_Sequence,<targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                 1          2              3            4
 def exec_Cropped_Cat_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8264,6 +8489,10 @@ def exec_Cropped_Cat_EndTime_Sequence(t,vState):
 #Narrow_Cat_EndTime_Single,       <targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2           3       4        5            6
 def exec_Narrow_Cat_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8292,6 +8521,10 @@ def exec_Narrow_Cat_EndTime_Single(t,vState):
 #Cropped_Cat_EndTime_Single,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1           2            3         4         5          6
 def exec_Cropped_Cat_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8321,6 +8554,10 @@ def exec_Cropped_Cat_EndTime_Single(t,vState):
 #Narrow_JNow_Count_Sequence, <RA>,<Dec>,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                             1     2       3           4           5             6
 def exec_Narrow_JNow_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8350,6 +8587,10 @@ def exec_Narrow_JNow_Count_Sequence(t,vState):
 #Cropped_JNow_Count_Sequence,<RA>,<Dec>,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1    2       3            4            5           6
 def exec_Cropped_JNow_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8380,6 +8621,10 @@ def exec_Cropped_JNow_Count_Sequence(t,vState):
 #Narrow_JNow_Count_Single,    <RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                               1     2       3           4           5       6        7           8
 def exec_Narrow_JNow_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8411,6 +8656,10 @@ def exec_Narrow_JNow_Count_Single(t,vState):
 #Cropped_JNow_Count_Single,<RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                           1     2       3            4          5        6         7           8
 def exec_Cropped_JNow_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8443,6 +8692,10 @@ def exec_Cropped_JNow_Count_Single(t,vState):
 #Narrow_JNow_EndTime_Sequence,  <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                1     2       3           4        5                 6
 def exec_Narrow_JNow_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8472,6 +8725,10 @@ def exec_Narrow_JNow_EndTime_Sequence(t,vState):
 #Cropped_JNow_EndTime_Sequence,<RA>,<Dec>,<targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                               1     2       3           4              5           6
 def exec_Cropped_JNow_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8502,6 +8759,10 @@ def exec_Cropped_JNow_EndTime_Sequence(t,vState):
 #Narrow_JNow_EndTime_Single,      <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                   1     2       3           4           5       6        7            8
 def exec_Narrow_JNow_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8533,6 +8794,10 @@ def exec_Narrow_JNow_EndTime_Single(t,vState):
 #Cropped_JNow_EndTime_Single,<RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1    2       3           4            5        6         7           8
 def exec_Cropped_JNow_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8565,6 +8830,10 @@ def exec_Cropped_JNow_EndTime_Single(t,vState):
 #Narrow_J2000_Count_Sequence,  <RA>,<Dec>,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                               1     2       3           4           5             6
 def exec_Narrow_J2000_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8594,6 +8863,10 @@ def exec_Narrow_J2000_Count_Sequence(t,vState):
 #Cropped_J2000_Count_Sequence,<RA>,<Dec>,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1     2       3           4             5           6
 def exec_Cropped_J2000_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8624,6 +8897,10 @@ def exec_Cropped_J2000_Count_Sequence(t,vState):
 #Narrow_J2000_Count_Single,   <RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1     2       3           4           5       6        7            8
 def exec_Narrow_J2000_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8655,6 +8932,10 @@ def exec_Narrow_J2000_Count_Single(t,vState):
 #Cropped_J2000_Count_Single,<RA>,<Dec>,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                            1     2       3           4           5        6         7          8
 def exec_Cropped_J2000_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8687,6 +8968,10 @@ def exec_Cropped_J2000_Count_Single(t,vState):
 #Narrow_J2000_EndTime_Sequence,  <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                 1     2       3           4           5              6
 def exec_Narrow_J2000_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8717,6 +9002,10 @@ def exec_Narrow_J2000_EndTime_Sequence(t,vState):
 #Cropped_J2000_EndTime_Sequence,<RA>,<Dec>,<targetID>,<hh:mm:ss>,  <seq-filename>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                1     2       3          4              5           6
 def exec_Cropped_J2000_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8747,6 +9036,10 @@ def exec_Cropped_J2000_EndTime_Sequence(t,vState):
 #Narrow_J2000_EndTime_Single,     <RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                   1     2       3           4           5       6          7          8
 def exec_Narrow_J2000_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8778,6 +9071,10 @@ def exec_Narrow_J2000_EndTime_Single(t,vState):
 #Cropped_J2000_EndTime_Single,<RA>,<Dec>,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                              1     2       3          4             5        6         7          8
 def exec_Cropped_J2000_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8810,6 +9107,10 @@ def exec_Cropped_J2000_EndTime_Single(t,vState):
 #Narrow_Stationary_Count_Sequence,  <targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2           3              4
 def exec_Narrow_Stationary_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8835,6 +9136,10 @@ def exec_Narrow_Stationary_Count_Sequence(t,vState):
 #Cropped_Stationary_Count_Sequence,<targetID>[, <repeat>, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2             3           4
 def exec_Cropped_Stationary_Count_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8861,6 +9166,10 @@ def exec_Cropped_Stationary_Count_Sequence(t,vState):
 #Narrow_Stationary_Count_Single,   <targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2           3         4        5          6
 def exec_Narrow_Stationary_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8888,6 +9197,10 @@ def exec_Narrow_Stationary_Count_Single(t,vState):
 #Cropped_Stationary_Count_Single,<targetID>[, <repeat>, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                    1            2         3         4         5          6
 def exec_Cropped_Stationary_Count_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8917,6 +9230,10 @@ def exec_Cropped_Stationary_Count_Single(t,vState):
 #                                      1           2           3               4
 #StationaryRunUntil	execStationaryRunUntil(t,vState):
 def exec_Narrow_Stationary_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8942,6 +9259,10 @@ def exec_Narrow_Stationary_EndTime_Sequence(t,vState):
 #Cropped_Stationary_EndTime_Sequence,<targetID>,<hh:mm:ss>[, <seq-filename>],<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                        1           2            3             4
 def exec_Cropped_Stationary_EndTime_Sequence(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -8968,6 +9289,10 @@ def exec_Cropped_Stationary_EndTime_Sequence(t,vState):
 #Narrow_Stationary_EndTime_Single,  <targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2           3         4         5           6
 def exec_Narrow_Stationary_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "no"
@@ -8995,6 +9320,10 @@ def exec_Narrow_Stationary_EndTime_Single(t,vState):
 #Cropped_Stationary_EndTime_Single,<targetID>,<hh:mm:ss>[, <exp-secs>, <bin>, <L/R/G/B/Ha>,<G-top>,<G-bottom>,<G-left>,<G-right>[,Reverse]]
 #                                      1           2            3        4         5          6
 def exec_Cropped_Stationary_EndTime_Single(t,vState):
+  if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command")
+      return (0,)
+
   try:
    dic = {}
    dic["crop"]     = "yes"
@@ -9573,6 +9902,9 @@ def PopPinpointControl(vState):
 ##
 def execAutoUntil(t,vState):
     Log2(0, "** AutoUntil: survey of automatically selected objects")
+    if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execAutoUntil")
+      return (0,)
 
     tup = TestSkipAhead(vState)
     if tup[0] != 0:
@@ -11493,6 +11825,9 @@ def CalculateImagerRaDecOffset(desiredPos,vState):  #THIS IS NOT USED
 #=====================================================================================
 def execNearAutoFocus(dic,vState):
    #vState.ResetImagerOffset()   #forces positioning to center in guider
+   if TestSunAltitude(-6):
+      Error("Sun altitude too high for retry of this command: execAutoFocus")
+      return (0,)
 
    #build dic2 object for CatFocusNear() for current location
    dic2 = {}
@@ -13656,15 +13991,18 @@ def CheckPrepareRun():
 #-#####
 # The script starts here
 #-######
-#print "Remember: run eserver.py first if want to receive realtime updates of program state"
-
-#SendToServer(getframeinfo(currentframe()),"========= Startup ===========")
 
 #Make sure the log file has a break showing a new start
 ObservingDateSet()
 LogHeader()
 print "Observing date =", ObservingDateString()
 
+if not UseWeathershieldFlag():
+    print("*** NOTE: Weathershield is currently DISABLED.")
+    print("*** To enable it, edit the file C:/fits_script/UseWeathershield.txt")
+    print("*** Press enter to continue...")
+    x = raw_input()
+    
 try:
     okToRun = False
     if len(sys.argv) == 1:

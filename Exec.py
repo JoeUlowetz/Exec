@@ -7336,6 +7336,7 @@ def Process( Line, vState ):
                             #if this is a 'stationary' command or other that should not be re-executed, just skip it
                             if not rerun:
                                 tret = (1,)
+#WRONG: THIS BREAK FALLS OUT OF LOOP AND HITS WRONG MESSAGE ABOUT VALIDATION ERROR                                
                                 break
 
                             #is the target too far west (HA > ~5?), then just skip it
@@ -7345,6 +7346,7 @@ def Process( Line, vState ):
                             if TestSunAltitude(-6):
                                 Error("Sun altitude too high for retry of this command")
                                 tret = (1,)
+#WRONG: THIS BREAK FALLS OUT OF LOOP AND HITS WRONG MESSAGE ABOUT VALIDATION ERROR                                
                                 break
 
 #TODO: add check of GetWeathershieldInfo() in all/important imaging steps, so it comes here as soon as cloudy, not after series of PP solve failures

@@ -99,6 +99,9 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #               (this code hasn't changed for years, so this must be a very rare occurrence)
 #2017.08.30 JU: removed calls to RetryInitialMovementUntilClear and replaced with raise WeatherError
 #2017.09.12 JU: Revise logic for calling Pinpoint and Astrometry.net logic
+#2018.01.03 JU: Changed Astrometry.net call to run in separate thread; if it ever takes longer than 10 minutes
+#               to complete, the feature is disabled and the thread is abandoned so the rest of the logic can work normally.
+
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -177,6 +180,7 @@ import sys
 import string
 
 import subprocess
+import threading
 
 #Exec4n.py 2015.12.13
 import socket
@@ -462,7 +466,7 @@ class cState:
         #During guiding, if the scope position moves by more than this amount (arcmin) from
         # the initial GOTO position, then stop the current exposure and reacquire target;
         # we have robably lost the guide star.
-        self.driftThreshold = 4.0
+        self.driftThreshold = 5.0   #was 4.0
         self.gotoPosition = Position()
 
 ##        #flag whether temp comp has been enabled yet for current run (need to have focus event to enable)
@@ -806,9 +810,9 @@ class Position:
     def dump(self):  #returns long string that can be printed
        global UTIL
        ret = "\n"
-       if not self.isValid:
-          ret += "THIS OBJECT IS NOT VALID!\n"
-          return ret
+       #if not self.isValid:
+       #   ret += "THIS OBJECT IS NOT VALID!\n"
+       #   return ret
        ret =  "Position dump:\n"
        ret += "Name:  %s\n" % (self.posName)
        ret += "J2000: %s  %s\n" % (UTIL.HoursToHMS(self.__RAJ2000,":",":","",1), DegreesToDMS(self.__DecJ2000))
@@ -1535,7 +1539,12 @@ def LogStatus( vState ):  #write out frequent status info to special file
    nowPos = Position()
    try:
         nowPos.setJNowDecimal(vState.MOUNT.RightAscension,vState.MOUNT.Declination)
-
+        Log2(1,"nowPos.dump:")
+        Log2(1,nowPos.dump())
+        Log2(1,"vState.goto.dump:")
+        Log2(1,vState.gotoPosition.dRA_JNow().dump())
+        
+        
         diffRA = vState.gotoPosition.dRA_JNow() - nowPos.dRA_JNow()
         diffDec = vState.gotoPosition.dDec_JNow() - nowPos.dDec_JNow()
         DiffRAdeg = diffRA * 15 * cosd(nowPos.dDec_JNow())   #convert RA diff into degrees, adjusted for declination
@@ -4409,8 +4418,38 @@ def CountImageStars( camera, expectedPos, targetID, filename, trace, vState ):
     return numImageStars
 
 #--------------------------------------------------------------------------------------------------------
+AstrometryResult = (False, 0., 0.,0.)   #global variable to return result if thread completes
 def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vState ):
+    try:
+        Log2(2,"Starting thread: CustomAstrometryNetSolve_THREAD")
+        t = threading.Thread(target=CustomAstrometryNetSolve_THREAD, args=(camera, expectedPos, targetID, filename, trace, vState))
+        t.start()
+        
+        t.join(600)  #if it takes more than 10 minutes, stop and disable this feature so normal logic can run instead
+        Log2(2,"Checking thread result:")
+        if t.is_alive():
+            Log2(2,"THREAD IS NOT DONE; ***DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG***")
+            vState.AstrometryNet = 0
+            Log2Summary(0,"DISABLE Astrometry.net FEATURE BECAUSE IT APPEARS TO BE HUNG")
+            #NOTE: we abandon the thread; we don't try to do a final join() because the thread appears to be hung
+            return (False, 0., 0.,0.) 
+        else:
+            Log2(2,"Thread completed normally")
+        t.join()    #final join() to make sure fully done
+        Log2(2,"Final join returned as expected")
+        
+        return AstrometryResult
+    except:
+        Error("UNHANDLED EXCEPTION WHEN TRYING TO RUN THREAD")
+        niceLogExceptionInfo()
+        return (False, 0., 0.,0.) 
+        
+def CustomAstrometryNetSolve_THREAD(camera, expectedPos, targetID, filename, trace, vState ):
+    #WARNING: sometimes Astrometry.net can HANG indefinitely, so call it in a thread that we can abandon if it takes too long.
+    #Otherwise, the entire program is held here, including not parking the scope at all.
+    
     #see documentation of argument list and return values in CustomPinpointSolve()
+    global AstrometryResult
 
     start = time.time()
     if camera == 0:
@@ -4421,14 +4460,15 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
     #2017.07.03: before calling Astrometry.net, first use PinPoint to COUNT the number of stars
     # present in the image. If the number is too low, don't bother trying Astrometry.net (probably bad weather)
     numImageStars = CountImageStars( camera, expectedPos, targetID, filename, trace, vState )
-
+        
     Log2(2,"Number of image stars: %d" % numImageStars)             #HERE IS NUMBER OF IMAGE STARS IDENTIFIED IN THIS IMAGE-----------------======================
     if numImageStars < 10:  #ADJUST THIS
         Log2Summary(1,"AN " + sCamera + " less than 10 stars in image; skip calling Astrometry.net")
         Log2(2, "vvvvvvvvvv")
         Log2(2, "> failed <             (less than 10 stars in image; skip calling Astrometry.net)" )
         Log2(2, "^^^^^^^^^^")
-        return (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.)
+        return
     #end of Pinpoint addition feature
 
     try:
@@ -4436,6 +4476,7 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         #there is a problem with the internet or the remote web site
         Log2(2,"About to create Astrometry.net Client")
         client = Client()
+#NEED TO PUT THREAD LOGIC INSIDE an_client class
 
         Log2(2,"About to log in; this is the ID string assigned to me")
         client.login('byntncnnbevtsyis')
@@ -4453,7 +4494,9 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2(2, "^^^^^^^^^^")
         Log2(2, "Suggestion: try opening web site nova.astrometry.net to see if it is currently working." )
         Log2(2, "If not working, change cmd file to:  Set_Astrometry.net=0   to disable for now")
-        return (False, 0., 0.,0.)
+        #NOTE: I am not deleting the Client object here, just in case it caused this exception
+        AstrometryResult = (False, 0., 0.,0.)
+        return
 
     status = client.solved_valid
     end = time.time()
@@ -4489,7 +4532,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
 
         del client
-        return (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.)
+        return
 
     #It appears to have worked
     Log2(2,"Astrometry.net results returned; successful")
@@ -4499,7 +4543,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
     except:
         Log2(0,"ERROR: EXCEPTION CONVERTING client.solved_RA,Dec to floats")
         del client
-        return (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.)
+        return
 
     diffRA = solvedRA - expectedPos.dRA_J2000()
     diffDec = solvedDec - expectedPos.dDec_J2000()
@@ -4530,7 +4575,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
         Log2Summary(1,"AN " + sCamera + " failed; status = %s" % msg)
 
         del client
-        return (False, 0., 0.,0.)
+        AstrometryResult = (False, 0., 0.,0.)
+        return
 
 
     Log2Summary(1,"AN " + sCamera + " SUCCESS, Diff: %6.2f arcmin" % delta)
@@ -4539,7 +4585,8 @@ def CustomAstrometryNetSolve( camera, expectedPos, targetID, filename, trace, vS
 
     del client
 
-    return (True, solvedRA, solvedDec, delta)     #success
+    AstrometryResult = (True, solvedRA, solvedDec, delta)     #success
+    return
 
 #--------------------------------------------------------------------------------------------------------
 def CustomPinpointSolve( camera, expectedPos, targetID, filename, trace, vState ):

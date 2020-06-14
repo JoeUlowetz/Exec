@@ -6401,6 +6401,8 @@ def GOTO2(desiredScopePos,vState,name=""):
     sDec_diffJ = DegreesToDMS(dDec_diffJ)
     sRA_diff2 = UTIL.HoursToHMS(dRA_diff2,":",":","",1)
     sDec_diff2 = DegreesToDMS(dDec_diff2)
+    delta1 = math.sqrt((dRA_diffJ * dRA_diffJ) + (dDec_diffJ * dDec_diffJ)) * 60   #arcmin
+    delta2 = math.sqrt((dRA_diff2 * dRA_diff2) + (dDec_diff2 * dDec_diff2)) * 60   #arcmin
 
     sAlt_to = str(round(vState.MOUNT.Altitude,1))		#string
     sAz_to  = str(round(vState.MOUNT.Azimuth,1))		#string
@@ -6408,7 +6410,7 @@ def GOTO2(desiredScopePos,vState,name=""):
     line1 = "       From     %s %s  %s %s  side: %d  Alt: %4s  Az: %5s" % (sRA_fromJ, sDec_fromJ, sRA_from2, sDec_from2, beforeSideOfPier, sAlt_from, sAz_from)
     line2 = "       Desired  %s %s  %s %s  Duration: %d"                % (sRA_desiredJ, sDec_desiredJ, sRA_desired2, sDec_desired2, slewTime)
     line3 = "       To       %s %s  %s %s  side: %d  Alt: %4s  Az: %5s" % (sRA_afterJ, sDec_afterJ, sRA_after2, sDec_after2, afterSideOfPier, sAlt_to, sAz_to)
-    line4 = "       Diff    %9s  %8s %9s  %8s"                          % (sRA_diffJ,sDec_diffJ,sRA_diff2,sDec_diff2)
+    line4 = "       Diff    %9s  %8s %9s  %8s         = %6.2f/%6.2f arcmin" % (sRA_diffJ,sDec_diffJ,sRA_diff2,sDec_diff2,delta1,delta2)
     Log2(4,line0)
     Log2(4,line1)
     Log2(4,line2)

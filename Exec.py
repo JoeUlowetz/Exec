@@ -7,6 +7,9 @@
 BASE = r"C:\Users\W510\Documents"
 BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 
+Observatory_Database = "C:/fits_script/exec_db.db"
+
+
 #================================================================================
 # COM Objects used here:
 #--------------------------
@@ -144,6 +147,7 @@ BASE2 = r"C:\Documents and Settings\Joe\My Documents"
 #2018.01.07 JU: Initial changes to Precess...() routines fixed; should work now.
 #2018.04.08 JU: Changed settings for vState.MeridianSafety and vState.MeridianPast because they were too large and mount would stop first
 #2018.04.28 JU: Added focuser temperature and position setting to Summary log when reporting exposure
+#2018.09.02 JU: Adding SQLite3 features; see designs on laptop W510 in C:\Users\W510\Documents\SQLite
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -227,27 +231,31 @@ import threading
 import ephem
 import random   #used for RandomSafeLocation()
 
-#Exec4n.py 2015.12.13
-import socket
-from inspect import currentframe, getframeinfo
+import sqlite3  #added 2018.09.02 JU
+
+import imaging_db   #my code that implements DB functions:  imaging_db.py
+
+#Exec4n.py 2015.12.13    DISABLED 2018.09.02
+#import socket
+#from inspect import currentframe, getframeinfo
 def SendToServer( frameinfo, msg):
     return	#temp disabled 2016.02.01
-    try:
-        clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        clientsocket.connect(('localhost', 8089))
-        if msg == "EXIT":
-            clientsocket.send(msg)
-            clientsocket.shutdown(socket.SHUT_RDWR)
-            clientsocket.close()
-            return
-
-        prefix = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime( time.time() ) )
-        outmsg = "%s [%5d] : %s" % (prefix,frameinfo.lineno,msg)
-        clientsocket.send(outmsg)
-        clientsocket.shutdown(socket.SHUT_RDWR)
-        clientsocket.close()
-    except:
-        print "[Unable to send socket message]"
+ #   try:
+ #       clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+ #       clientsocket.connect(('localhost', 8089))
+ #       if msg == "EXIT":
+ #           clientsocket.send(msg)
+ #           clientsocket.shutdown(socket.SHUT_RDWR)
+ #           clientsocket.close()
+ #           return
+#
+#        prefix = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime( time.time() ) )
+#        outmsg = "%s [%5d] : %s" % (prefix,frameinfo.lineno,msg)
+#        clientsocket.send(outmsg)
+#        clientsocket.shutdown(socket.SHUT_RDWR)
+#        clientsocket.close()
+#    except:
+#        print "[Unable to send socket message]"
 
 #2013.09.03 JU: added so I can dump content of Guider ctrl window, to help understand why guiding does not start sometimes
 from winGuiAuto import *    #give access to Windows API calls from Python
@@ -421,6 +429,7 @@ class HorizonError( Exception ):    #throw if current target is below western tr
 class ArgumentError(Exception):
     pass    #used when parsing command arguments for one command to execute
 #--------------------------------
+
 class cState:
     def Reset(self):
         self.MeridianSafety = 0.15     #interrupt current exposure if this far past meridian
@@ -633,6 +642,12 @@ class cState:
     def __init__(self):
         self.Reset()
 
+        #SQLite3 connection
+        self.SQLITE = sqlite3.connect( Observatory_Database )
+        imaging_db.SqliteStartup( self.SQLITE, 'Exec5D' )    #record start of prgm in Startup table of database
+        #To get cursor later on:
+        #   cur = vState.SQLITE.cursor()
+        
         # COM objects
         print "Connect: DriverHelper.Util"
         self.UTIL   = win32com.client.Dispatch("DriverHelper.Util")
@@ -1656,17 +1671,21 @@ def LogStatus( vState ):  #write out frequent status info to special file
 
           if abs(RecentGuideY) > gGuidingYMax and RecentGuideY != -99:
               gGuidingYMax = abs(RecentGuideY)
-
+              
+          imaging_db.RecordGuider(vState,True,1022)
+          
       else:
           #new measurement not available yet; suppress logging unless we get called
           # many times in a row
           vState.LogStatusCount += 1
           if vState.LogStatusCount < 10:
             return False     #do not log
+            
           #else log the old values
           flag = "o"
           bStaleData = True
           vState.LogStatusCount = 6 #set this so we don't do this again for ~4 seconds (6 = 10 - 4)
+          imaging_db.RecordGuider(vState,False,1023)  #(Do I want to do this?)
    except:
      niceLogExceptionInfo()
      Error("Threw exception trying to read guider errors")
@@ -1958,7 +1977,19 @@ def LogStatusBase( vState, guideX, guideY, guideFlag,savgX,slenAvgX,savgY,slenAv
 #  f2.write("                                      Pier RevX Cam                  Aggr                -Focuser-\n")
 #  f2.write("           ---RA--- ---Dec--- Alt- -Az-- P R   Temp  Pwr Xerr  Yerr  X  Y  FWHM Sidereal Posn Temp\n")
 #            05:26:21 | 22:36:48  34:01:17 36.6 285.4 0 0  -10.2  61  0.44  0.08  7  5   0.0 03:10:52 3333  622
-#            05:26:26 | 22:36:48  34:01:17 36.6 285.4 0 0  -9.79  58  0.41 -0.09  7  5   0.0 03:10:58
+#            05:26:26 | 22:36:48  34:01:17 36.6 285.4 0 0  -9.79  58  0.41 -0.09  7  5   0.0 03:10:58\
+
+   start_time = time.time()
+   imaging_db.RecordMount(vState,1001)
+   split1 = time.time() - start_time
+   imaging_db.RecordCamera(vState,1002)
+   split2 = time.time() - start_time
+   imaging_db.RecordGuider(vState,False,1003)
+   split3 = time.time() - start_time
+   imaging_db.RecordFocuser(vState,1004)
+   elapsed_time = time.time() - start_time
+   imaging_db.RecordPerformance(vState,elapsed_time,split1,split2,split3) #track how much time this is taking, to make sure it isn't too much
+   
    try:
       dRA = vState.MOUNT.RightAscension
       dDec = vState.MOUNT.Declination
@@ -2631,6 +2662,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
             count += 1
             time.sleep(2)    #wait until the guide exposure is done
             LogStatus(vState)   #do NOT test guider quality here; we are not guiding!
+            imaging_db.RecordGuider(vState,False,1041)
 
         X = vState.CAMERA.GuiderXStarPosition
         Y = vState.CAMERA.GuiderYStarPosition
@@ -2657,6 +2689,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
             Log2(1,"of frame (or no stars at all).                     *")
             Log2(1,"****************************************************")
             #return FindRestrictedGuideStar(vState)
+            imaging_db.RecordGuider(vState,False,1020)
             return FindGuideStar(objectName,factor,False,vState)      #recursive call (1 level!)
 
 
@@ -2687,7 +2720,8 @@ def FindGuideStar(objectName,factor,autoselect,vState):
             time.sleep(2)    #wait until the guide exposure is done
             count += 1
             LogStatus(vState)   #do NOT test guider quality here; we are not guiding!
-
+            imaging_db.RecordGuider(vState,False,1042)
+            
         Log2(2,"Guider field exposure complete(2)")
         if count == 0:
             Error("The guider exposure to find a guide star returned immediately(2); did it actually take an image???")
@@ -2706,6 +2740,7 @@ def FindGuideStar(objectName,factor,autoselect,vState):
 
 def ReportGuiderState(vState,message):
     Log2(3,"ReportGuiderState: %s" % message)
+    imaging_db.RecordGuider(vState,False,1021)
     try:    #protect just in case of problem; these actions are not critical
         Log2(4,"Guider settings:  %s" % message)
         Log2(4,"... X Aggr:     " + str(vState.CAMERA.GuiderAggressivenessX))
@@ -2891,8 +2926,12 @@ def StartGuiding(objectName, vState):
                   time.sleep(1)
                   if vState.CAMERA.GuiderRunning:
                      Error("NOTE: GuiderRunning reports true although GuiderTrack startup reported false. What does this mean?")
+                     imaging_db.RecordGuider(vState,False,1043)
+
                   else:
                      Log2(0,"Note: GuiderRunning also reports false.")
+                     imaging_db.RecordGuider(vState,False,1044)
+                     
                   bProblem = True
                   ReportGuiderState(vState)
             except:
@@ -2950,6 +2989,8 @@ def SettleGuiding(vState):
       if vState.CAMERA.GuiderNewMeasurement:
          #Note: we only call LogStatusBase during guider settle when there is a NEW measurement to report
          global RecentGuideX
+         imaging_db.RecordGuider(vState,True,1049)
+
          RecentGuideX = vState.CAMERA.GuiderXError
          global RecentGuideY
          RecentGuideY = vState.CAMERA.GuiderYError
@@ -3015,6 +3056,7 @@ def SettleGuiding(vState):
                Log2(0,"*****************************")
                Log2(3,"Number of errors to evaluate: %d, avgx: %4.2f, threshold: %4.2f" % (len(gListGuideXErrors),avgX,(vState.GuidingSettleThreshold * 4)))
                DumpGuideErrorList("X",gListGuideXErrors)
+               imaging_db.RecordGuider(vState,False,1045)
                bReturn = True
 
          if len(gListGuideYErrors) >= 10 and avgY > (vState.GuidingSettleThreshold * 4) and TestGuidingTrend("Y",gListGuideYErrors):  #1.5:
@@ -3024,6 +3066,7 @@ def SettleGuiding(vState):
                Log2(0,"*****************************")
                Log2(3,"Number of errors to evaluate: %d, avgx: %4.2f, threshold: %4.2f" % (len(gListGuideYErrors),avgY,(vState.GuidingSettleThreshold * 4)))
                DumpGuideErrorList("Y",gListGuideYErrors)
+               imaging_db.RecordGuider(vState,False,1046)
                bReturn = True
 
          tupx = CheckOscillation(gListGuideXErrors,vState)
@@ -3055,6 +3098,7 @@ def SettleGuiding(vState):
                Log2(0,"** Guiding startup Oscillation (Y) **")
                Log2(0,"*************************************")
                Log2(0,"msg = %s" % tupy[1])
+               imaging_db.RecordGuider(vState,False,1047)
                #if Y-aggr > 3, decr Y-aggr
                try:
                        yAggr = vState.CAMERA.GuiderAggressivenessY
@@ -3079,6 +3123,7 @@ def SettleGuiding(vState):
        # used reliably. We might get better results turning off guiding in this case
        # so we don't guide on 'noise'.
        Error("ALERT! Guider did not settle during configured period; we are configured to run WITHOUT GUIDING in this case!")
+       imaging_db.RecordGuider(vState,False,1048)
        StopGuiding(vState)
        return False
 
@@ -3132,6 +3177,8 @@ def StopGuiding(vState):
     # I wrote a VB script that calls the StopGuider() cmd; this seems to work!
     ret = os.system("cscript c:\\fits_script\\StopGuider.vbs")
 
+    imaging_db.RecordGuider(vState,False,1050)
+    
     if ret != 0:
         Error("Call to shut down guider failed")
         Error("*** EXPECT PROBLEMS TO OCCUR NOW ***")
@@ -3965,6 +4012,7 @@ def TakeNarrowImage(exposure,vState):   #used by Pinpoint solve routine
     while not vState.CAMERA.ImageReady:
         time.sleep(2)
         LogStatus(vState)
+
     #Log2(4,"PP---END narrow field exposure")
     doc = vState.CAMERA.Document     #point to image just taken
     return doc
@@ -5940,7 +5988,7 @@ def EnhancedMeridianFlip(vState):       #!! Gemini specific code !!
     Log2(1,"***************************************")
     Log2Summary(1,"Attempting enhanced meridian flip")
 
-    SendToServer(getframeinfo(currentframe()),"Attempting enhanced meridian flip")
+    #SendToServer(getframeinfo(currentframe()),"Attempting enhanced meridian flip")
 
     retry = 3
     while retry > 0:
@@ -6264,6 +6312,8 @@ def GOTO2(desiredScopePos,vState,name=""):
     vState.gotoPosition.posName = name
     Log2(4,"vState.gotoPosition.isValid set to FALSE")
 
+    imaging_db.RecordGuider(vState,False,1051)
+
     vState.goto_count += 1
     StopGuiding(vState) #make sure guider is not running (this call does nothing if guider not currently running)
 
@@ -6281,6 +6331,7 @@ def GOTO2(desiredScopePos,vState,name=""):
 
     #Are we already 'stuck' at the meridian? If tracking is off, we may be
     if not vState.MOUNT.Tracking:
+        imaging_db.RecordMount(vState,1061)
         EnhancedMeridianFlip(vState)
 
 
@@ -6306,6 +6357,7 @@ def GOTO2(desiredScopePos,vState,name=""):
 #start of subroutine here----------------------------
     Log2(4,"About to issue SlewToCoordinatesAsync")
     try:
+        imaging_db.RecordMount(vState,1062)
         vState.MOUNT.SlewToCoordinatesAsync(dRA_JNow_destination, dDec_JNow_destination)       # Movement occurs here <----------------
     except:
         Error("Unable to slew to specified coordinates; probably below horizon!")
@@ -6327,6 +6379,7 @@ def GOTO2(desiredScopePos,vState,name=""):
        LogStatusShort(vState)
        time.sleep(1)    #wait until the slew is done
        slewTime = time.time() - started
+       imaging_db.RecordMount(vState,1063)
        if slewTime > 120:
           #this is wrong!
           Error("Excessive slew detected; ABORTING SLEW")
@@ -6444,6 +6497,7 @@ def GOTO2(desiredScopePos,vState,name=""):
        time.sleep(1)    #wait until movement really stops
        toRA = vState.MOUNT.RightAscension
        toDec = vState.MOUNT.Declination
+       imaging_db.RecordMount(vState,1065)
 
        #have we moved much?
        DiffRA = abs(toRA - fromRA)
@@ -6755,7 +6809,7 @@ def ExecuteList( theList ):
 def Process( Line, vState ):
     # Line = actual command to process; comments were stripped out before calling here
 
-    SendToServer(getframeinfo(currentframe()),"Process: " + Line)
+    #SendToServer(getframeinfo(currentframe()),"Process: " + Line)
 
     #version 1 commands still supported
     action_list = [      #commands that result in actions
@@ -10646,15 +10700,22 @@ def FocusGoodEnough():      #THIS IS NOT CALLED BY ANYTHING; CODING WAS NEVER FI
       timeoutAttempts -= 1
 
       try:
+            imaging_db.RecordFocuser(vState,1030)
             vState.FOCUSCONTROL.FocusAsync()   #start FocusMax via async call
             started = time.time()
             limit = 10*60   #10 minutes time limit for focusing to be really generous...
             while ((time.time() - started) < limit) and (vState.FOCUSCONTROL.FocusAsyncStatus == -1):
                  time.sleep(1)
+                 imaging_db.RecordFocuser(vState,1031)
       except:
             Error( "...Focus failed(exception): " + argTarget )
             niceLogExceptionInfo()
-      #TODO...
+            imaging_db.RecordFocuser(vState,1230)
+
+      #TODO...???
+
+      imaging_db.RecordFocuser(vState,1032)
+
 #--------------------------------------------------------------------------------------------------------
 def callFocusMax(dic,vState):
 	# 2015.06.21: add filter selection?	CCDCamera.Filter [= Short]
@@ -10730,21 +10791,26 @@ def callFocusMax(dic,vState):
 #New section
         try:
             Log2(4,"Calling FocusMax FocusAsync()")
+            imaging_db.RecordFocuser(vState,1033)
             vState.FOCUSCONTROL.FocusAsync()	#note: async call
             started = time.time()
             limit = 10*60   #10 minutes time limit for focusing to be really generous...
             while ((time.time() - started) < limit) and (vState.FOCUSCONTROL.FocusAsyncStatus == -1):
                time.sleep(1)
+               imaging_db.RecordFocuser(vState,1034)
 
+            imaging_db.RecordFocuser(vState,1035)
             if (vState.FOCUSCONTROL.FocusAsyncStatus == -1):		#did we exit the above loop from timeout (focus still running)?
                if timeoutAttempts > 0:
                    timeoutAttempts -= 1
                    Error("*** Timeout waiting for FocusMax calling FocusAsync(), try issuing Halt and trying again")
                    Log2Summary(1,"FocusMax timeout (2)")
                    if vState.FOCUSCONTROL.IsMoving:
+                      imaging_db.RecordFocuser(vState,1236)
                       Error("*** ALERT!!! FOCUSER REPORTS THAT IT IS STILL MOVING!!!")
                    vState.FOCUSCONTROL.Halt()
                    Error("FocusMax Halt command issued.")
+                   imaging_db.RecordFocuser(vState,1037)
                    vState.focus_failed_count += 1
                    line = "FocusMax     -fail/focus(TIMEOUT!!)-    %s" % argTarget
                    LogBase(line,FOCUSER_LOG)
@@ -10752,6 +10818,7 @@ def callFocusMax(dic,vState):
                    continue
 
                Error("*** Timeout waiting for FocusMax FocusAsync() ***")
+               imaging_db.RecordFocuser(vState,1138)
                Log2Summary(1,"FocusMax timeout (1)")
                line = "FocusMax     -fail/focus(TIMEOUTs!)-    %s" % argTarget
                LogBase(line,FOCUSER_LOG)
@@ -10762,6 +10829,7 @@ def callFocusMax(dic,vState):
                raise WeatherError
             Log2(4,"FocusMax completed FocusAsync")
             if vState.FOCUSCONTROL.FocusAsyncStatus == 0:
+               imaging_db.RecordFocuser(vState,1139)
                Error("...Unable to focus on star(3)")
                Log2Summary(1,"FocusMax unable to focus on star (error 3)")
                vState.focus_failed_count += 1
@@ -10772,6 +10840,7 @@ def callFocusMax(dic,vState):
                continue
 
         except SoundAlarmError: ##THIS NO LONGER HAPPENS, WE THROW WeatherError EXCEPTION INSTEAD
+            imaging_db.RecordFocuser(vState,1370)
             Error("Caught exception in callFocusMax(), park scope then sound error")
             SafetyPark(vState)
             raise 	#re-raise this alarm; need to stop if this happens
@@ -10782,6 +10851,7 @@ def callFocusMax(dic,vState):
                pos = '???'
             Error( "...Focus failed(exception): " + argTarget + ", FocusPosition: " + pos )
             niceLogExceptionInfo()
+            imaging_db.RecordFocuser(vState,1271)
             line = "FocusMax     -fail/focus(exception)-    %s" % argTarget
             LogPerm(line,PERM_FOCUSER_LOG)
             vState.focus_failed_count += 1
@@ -10814,6 +10884,7 @@ def callFocusMax(dic,vState):
             LogBase(line,FOCUSER_LOG)
             LogPerm(line,PERM_FOCUSER_LOG)
             FocusCompensation(vState)   #move focuser to good location
+            imaging_db.RecordFocuser(vState,1072)
             continue
 
         if vState.FOCUSCONTROL.TotalFlux < 10000:
@@ -10832,6 +10903,7 @@ def callFocusMax(dic,vState):
             LogBase(line,FOCUSER_LOG)
             LogPerm(line + " **********",PERM_FOCUSER_LOG)
             FocusCompensation(vState)   #move focuser to good location
+            imaging_db.RecordFocuser(vState,1073)
             return False
 
         currentAttempt = vState.FOCUSER.Position
@@ -10895,6 +10967,7 @@ def callFocusMax(dic,vState):
                 vState.LastFocusPosition = vState.FOCUSER.Position
                 vState.LastFocusTemperature = vState.FOCUSER.Temperature
                 vState.FocusDataAvailable = True
+                imaging_db.RecordFocuser(vState,1074)
                 Log2(3,"Focuser results:")
                 Log2(3,"  LastFocusPosition    = %d  (A) (was = %d)" % (vState.LastFocusPosition,oldvalue))
                 Log2(3,"  LastFocusTemperature = %d" % vState.LastFocusTemperature)
@@ -10963,6 +11036,7 @@ def callFocusMax(dic,vState):
            #Error("!!! Stopping program because of consistent focus failure !!!")
            ##SafetyPark(vState)
            ##raise SoundAlarmError,'Halting program'
+           imaging_db.RecordFocuser(vState,1375)
            raise WeatherError
        return False
     else:
@@ -12266,7 +12340,7 @@ def implExp_StartCondition(dic,vState):
    #of the target.
 
    #Log2(0,"StartCondition: pass (not implemented yet)")
-   SendToServer(getframeinfo(currentframe()),"check start conditions")
+   #SendToServer(getframeinfo(currentframe()),"check start conditions")
 
    #calculate the sun's altitude
    now = time.gmtime()
@@ -12350,7 +12424,7 @@ def implExp_InitialMovement(dic,vState):
    #    start guiding
 
    #print dic
-   SendToServer(getframeinfo(currentframe()),"InitialMovement")
+   #SendToServer(getframeinfo(currentframe()),"InitialMovement")
 
    #Decide if any movement
    dType = dic["type"].lower()
@@ -12429,7 +12503,7 @@ def implExp_InitialMovement(dic,vState):
    #Enhancement #1: if on wrong side of pier for a target close to meridian, need to flip first
    tupflip = PredictSideOfPier(pos,vState)
    if tupflip[1]:
-       SendToServer(getframeinfo(currentframe()),"Move scope to other side of pier before GOTO")
+       #SendToServer(getframeinfo(currentframe()),"Move scope to other side of pier before GOTO")
 
        #need to move scope to other side of pier
        #calc some coord on desired side
@@ -12655,12 +12729,12 @@ def implExp_LightExposures(dic,vState):
 
       #check for skipAhead condition; also checks time/altitude if this step is limited by that
       if TestEndConditionReached(dic,vState):     #time or altitude condition check (ignored if dLimit == "count")
-        SendToServer(getframeinfo(currentframe()),"End condition reached")
+        #SendToServer(getframeinfo(currentframe()),"End condition reached")
         break
 
       if MeridianCross(vState):
           #we reached the meridian limit
-          SendToServer(getframeinfo(currentframe()),"Meridian limit reached")
+          #SendToServer(getframeinfo(currentframe()),"Meridian limit reached")
 
           if not vState.bContinueAfterPierFlip:
               #we are configured to STOP when a meridian flip is needed, do NOT
@@ -12695,7 +12769,7 @@ def implExp_LightExposures(dic,vState):
       PrepareAdvancedFocusComp(dic,vState)  #this will run benchmark focus ONCE per evening when appropriate, if enabled
 
       #Log("Inside exposure/sequence loop, i = %d" % (i))  #only write this message if we are going to take another exposure
-      SendToServer(getframeinfo(currentframe()),"Take exposure")
+      #SendToServer(getframeinfo(currentframe()),"Take exposure")
 
       #
       #imaging activity based on camera, sequence vs singles
@@ -12847,7 +12921,7 @@ def implExp(dic,vState):
     #   (1,index) = a "skip-ahead" event occurred, execute step[index] next
     #   (2,) = error, stop the script
     Log2(4,"implExp called with: %s" % str(dic))
-    SendToServer(getframeinfo(currentframe()),"implExp")
+    #SendToServer(getframeinfo(currentframe()),"implExp")
 
     global gCurrentTarget
     global gSubstep
@@ -13118,7 +13192,7 @@ def CheckPrepareRun():
 #-######
 print "Remember: run eserver.py first if want to receive realtime updates of program state"
 
-SendToServer(getframeinfo(currentframe()),"========= Startup ===========")
+#SendToServer(getframeinfo(currentframe()),"========= Startup ===========")
 
 #Make sure the log file has a break showing a new start
 ObservingDateSet()
@@ -13144,7 +13218,7 @@ try:
         okToRun = True
         script = sys.argv[1]
 
-    SendToServer(getframeinfo(currentframe()),"OK to run")
+    #SendToServer(getframeinfo(currentframe()),"OK to run")
 
     if okToRun:
         #---everything happens here---
@@ -13177,18 +13251,18 @@ try:
 
 except ValidationError:
     print "Cannot run because of ValidationError"
-    SendToServer(getframeinfo(currentframe()),"Validation Error")
+    #SendToServer(getframeinfo(currentframe()),"Validation Error")
 
 except EnvironmentError:
     #We already reported the error before reaching here.
     pass
-    SendToServer(getframeinfo(currentframe()),"Environment Error")
+    #SendToServer(getframeinfo(currentframe()),"Environment Error")
 
 except KeyboardInterrupt:
     Log2(0,"**Exit program via KeyboardInterrupt**")
 
 except: #catch any other exception to sound alarm and get operator's attention!
-    SendToServer(getframeinfo(currentframe()),"something happened")
+    #SendToServer(getframeinfo(currentframe()),"something happened")
 
     #consider adding call to SafetyPark here ?!
 
@@ -13217,5 +13291,5 @@ except: #catch any other exception to sound alarm and get operator's attention!
 
 Log2(0,"** End of script **")
 #Consider adding sound here to alert me that script ended??
-SendToServer(getframeinfo(currentframe()),"End of script reached.")
-SendToServer(getframeinfo(currentframe()),"EXIT")   #special command that tells server process to exit
+#SendToServer(getframeinfo(currentframe()),"End of script reached.")
+#SendToServer(getframeinfo(currentframe()),"EXIT")   #special command that tells server process to exit

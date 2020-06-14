@@ -644,11 +644,9 @@ class cState:
         self.Reset()
 
         #SQLite3 connection
-        self.SQLITE = sqlite3.connect( Observatory_Database )
+        self.SQLITE = sqlite3.connect( Observatory_Database )   #this is only accessed by script: imaging_db.py
         self.SQMASTER = sqlite3.connect( Master_Database )
         imaging_db.SqliteStartup( self.SQMASTER, 'Exec5D-startup' )    #record start of prgm in Startup table of database
-        #To get cursor later on:
-        #   cur = vState.SQLITE.cursor()
         
         # COM objects
         print "Connect: DriverHelper.Util"
@@ -6823,7 +6821,9 @@ def Process( Line, vState ):
         ("FOCUS",        execFocus,                 1),
         ("PARK",         execPark,                  0),
         ("DARKS",        execDarks,                 0),
+        ("CropDARKS",    execCropDarks,             0),
         ("BIAS",         execBias,                  0),
+        ("CropBIAS",     execCropBias,              0),
         ("FLATS",        execFlats,                 0),
         ("WAITUNTIL",    execWaitUntil,             0),
         ("CATGOTO",      execCatGoto,               0),      #Not implemented yet
@@ -7088,6 +7088,15 @@ def execDumpState(tup,vState):
 #--------------------------------
 def execArchive(t,vState):
     #runs the __FinishSession.bat file
+    
+    #Important: close the databases before running script, so script can rename the daily database file
+    if vState.SQMASTER is not None:
+        imaging_db.SqliteStartup( vState.SQMASTER, 'Exec5D-shutdown' ) 
+        vState.SQMASTER.close()
+        vState.SQMASTER = None
+    if vState.SQLITE is not None:
+        vState.SQLITE.close()
+        vState.SQLITE = None
 
     Log2(0,"About to run __FinishSession.bat")
     from subprocess import Popen
@@ -7097,8 +7106,6 @@ def execArchive(t,vState):
     print "stdout:", stdout
     print "stderr:",stderr
     Log2(0,"Completed running __FinishSession.bat")
-    if vState.SQMASTER is not None:
-        imaging_db.SqliteStartup( vState.SQMASTER, 'Exec5D-shutdown' )  
     return (0,)
 
 #--------------------------------
@@ -7362,6 +7369,31 @@ def execDarks(t,vState):
 
     return implDarks(dic,vState)
 
+#--------------------------------
+##        ("DARKS",        execDarks),    #
+#  Darks,    <exp-secs>, <repeat> [,<bin>]
+def execCropDarks(t,vState):
+    dic = {}
+    dic["crop"]  = "yes"
+    dic["isSeq"] = "no"
+    dic["limit"] = "count"
+    try:
+       dic["exp"] = float(t[1])
+    except:
+       dic["exp"] = vState.exposure
+
+    try:
+       dic["repeat"] = int(t[2])
+    except:
+       dic["repeat"] = vState.repeat
+
+    try:
+       dic["bin"] = int(t[3])
+    except:
+       dic["bin"] = 2
+
+    return implDarks(dic,vState)
+    
 def execUseful30MinuteDelay(vState):
     #called when we want a 30 minute delay, so take 30 minutes of darks.
     #Enhancement to do: do other variations of exposure/bin
@@ -7379,7 +7411,28 @@ def execUseful30MinuteDelay(vState):
 #  BIAS, <repeat> [,<bin>]
 def execBias(t,vState):
     dic = {}
-    dic["crop"]     = "no"
+    dic["crop"]  = "no"
+    dic["type"]  = "Bias"
+    dic["limit"] = "count"
+
+    try:
+       dic["repeat"] = int(t[1])
+    except:
+       dic["repeat"] = vState.repeat
+
+    try:
+       dic["bin"] = int(t[2])
+    except:
+       dic["bin"] = 2
+
+    return implBias(dic,vState)
+
+#--------------------------------
+##        ("BIAS",         execBias),     #
+#  BIAS, <repeat> [,<bin>]
+def execCropBias(t,vState):
+    dic = {}
+    dic["crop"]  = "yes"
     dic["type"]  = "Bias"
     dic["limit"] = "count"
 
@@ -11545,6 +11598,23 @@ def implBias(dic,vState):
     vState.CAMERA.BinX = argBin
     vState.CAMERA.BinY = argBin
 
+    if dic["crop"] == "yes":
+        tupc = CalcCropSize(dic["bin"],vState.CAMERA.cameraXSize,vState.CAMERA.cameraYSize)
+        vState.CAMERA.StartX = tupc[0]
+        vState.CAMERA.StartY = tupc[1]
+        vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
+        vState.CAMERA.NumY = tupc[3]
+        Log2(4,"Cropping settings:")
+        Log2(4,"   bin = %d" % dic["bin"])
+        Log2(4,"   StartX = %d" % tupc[0])
+        Log2(4,"   StartY = %d" % tupc[1])
+        Log2(4,"   NumX = %d" % tupc[2])
+        Log2(4,"   NumY = %d" % tupc[3])
+    else:
+        vState.CAMERA.BinX = argBin
+        vState.CAMERA.BinY = argBin
+        vState.CAMERA.SetFullFrame()
+    
     for i in range(argRepeat):
         filename_i = CreateFilename(vState.path_dark_bias_flat, argFileName,vState,argRepeat)
         if i == 0:  #just log on console this 1st time here
@@ -11621,11 +11691,30 @@ def implDarks(dic,vState):
        argFileName   = "Dark_%dx%d_%dsec_" % (argBin,argBin,argExposure)         #  base filename WITHOUT the trailing 5 seq digits.
 
        try:
-          vState.CAMERA.BinX = 1    #make sure no rounding for Full Frame
-          vState.CAMERA.BinY = 1
-          vState.CAMERA.SetFullFrame()
-          vState.CAMERA.BinX = argBin
-          vState.CAMERA.BinY = argBin
+            vState.CAMERA.BinX = 1    #make sure no rounding for Full Frame
+            vState.CAMERA.BinY = 1
+            vState.CAMERA.SetFullFrame()
+            vState.CAMERA.BinX = argBin
+            vState.CAMERA.BinY = argBin
+          
+            if dic["crop"] == "yes":
+                tupc = CalcCropSize(dic["bin"],vState.CAMERA.cameraXSize,vState.CAMERA.cameraYSize)
+                vState.CAMERA.StartX = tupc[0]
+                vState.CAMERA.StartY = tupc[1]
+                vState.CAMERA.NumX = tupc[2]   #NumX,NumY can be shortened if they won't fit in the available image size
+                vState.CAMERA.NumY = tupc[3]
+                Log2(4,"Cropping settings:")
+                Log2(4,"   bin = %d" % dic["bin"])
+                Log2(4,"   StartX = %d" % tupc[0])
+                Log2(4,"   StartY = %d" % tupc[1])
+                Log2(4,"   NumX = %d" % tupc[2])
+                Log2(4,"   NumY = %d" % tupc[3])
+            else:
+                vState.CAMERA.BinX = argBin
+                vState.CAMERA.BinY = argBin
+                vState.CAMERA.SetFullFrame()
+          
+          
        except:
           pass
 

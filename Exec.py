@@ -163,6 +163,7 @@ Master_Database = "C:/fits_script/Master_db.db"
 #2019.10.24 JU: Why do I call SettleGuiding() [lines ~12168, ~12245] before each exposure? This takes extra time from time series. Make optional???
 #               (This was introduced in 2017 in version Exec5.py) Note: for individual exposures, settle only happens if exposures > 150 sec.
 #2020.05.16 JU: Changed Weathershield threshold for cloudy sky from > -10 to now > -8
+#2020.07.14 JU: Removed UseWeathershieldFlag function, added Set_UseWeathershield setting; changed logic so CheckIfCloudy() handles decision about whether cloudy
 
 #If FocusMax does not give good answer:
 #   Option 1: calc absolute:  pos = -13*temp + 9750   [this changes over time]
@@ -860,6 +861,7 @@ class cState:
            self.FOCUSER       = win32com.client.Dispatch("FocusMax.Focuser")
 
         self.WesternHaltAltitude = 0    # degrees above western horizon to stop an exposure; set via Set_HaltAltitude=nn degrees
+        self.UseWeathershield = False   #controls whether it uses Weathershield to determine if currently cloudy; if it thinks it is cloudy then no imaging occurs
 
         self.FocusCompensationActive = 0    # 0 = False    #this is turned on with a config Setting
         self.AdvancedFocusState = -1
@@ -3061,7 +3063,7 @@ def StartGuiding(objectName, vState):
         Error("*** Guider threw an exception; MaxIm probably could not start guiding (could be weather issue) ***")
         niceLogExceptionInfo()
         ReportGuiderState(vState,"threw an exception calling camera.GuiderTrack")
-        SafetyPark(vState)
+        SafetyPark(vState,1)
         raise SoundAlarmError,'Halting program'
 
     if not bStarted:
@@ -3745,7 +3747,7 @@ def CreateEnhancedFilename( thepath, objectName, vState,binNumber,filterLetter,e
         #I don't think this error has ever occurred
         Error("The generated filename already exists; filename: %s  path: %s" % (basename,thepath))
         Error("directory list: %s" % str(currentFiles))
-        SafetyPark(vState)
+        SafetyPark(vState,2)
         raise "ProgramError"
 
     return fullname
@@ -3838,7 +3840,7 @@ def GetRecentFitsFilename(pathname,backCount):
 
     if len(content) == 0:
         Error("No files found in GetRecentFitsFilename()")
-        SafetyPark(vState)
+        SafetyPark(vState,3)
         raise "problem"
 
     # Sort keys, based on time stamps
@@ -4241,7 +4243,7 @@ def TakeWideExposure(exposure,vState):  #used by Pinpoint solve routine
   except:
         Log2(0,"Exception thrown in TakeWideExposure")
         niceLogExceptionInfo()
-        SafetyPark(vState)
+        SafetyPark(vState,4)
         raise SoundAlarmError,'Halting program'
 
 
@@ -4432,7 +4434,7 @@ def PinPointSingle(camera,originalDesiredPos, targetID, vState):
             except:
                 niceLogExceptionInfo()
                 Error("Exception thrown for SyncToCoordinates: mount given impossible coords to sync to!")
-                SafetyPark(vState)
+                SafetyPark(vState,5)
                 raise SoundAlarmError,'Halting program'
 
         else:
@@ -6258,7 +6260,7 @@ def execMeridianFlip(desiredPos,ID,vState,bImagerSolve):
         #raise "Pier flip did not occur"
         if EnhancedMeridianFlip(vState):
             Error("EnhancedMeridianFlip did not work; attempt to Park scope anyway (probably will not work)")
-            SafetyPark(vState)
+            SafetyPark(vState,6)
             raise SoundAlarmError,'Halting program' #still didn't work
         #the Enhanced flip worked; continue w/ positioning
 
@@ -6431,11 +6433,11 @@ def GOTO(targetScopePos,vState,name=""):
             #unable to successfully move to random location after several attempts,
             # so try parking mount at this point, then let outer loop run again to see if any better
             Log2(1,"[GOTO] Attempt SafetyPark after unable to move to random locations")
-            SafetyPark(vState)
+            SafetyPark(vState,7)
     #If we fall out of the outer loop, we have tried lots of attempts and not been successful, so give up
     Error("! SLEW FAILED TO REACH DESIRED LOCATION AFTER MULTIPLE ATTEMPTS")
     Log2Summary(1,"Unable to solve GOTO problem with Random solution; perform SafetyPark")
-    SafetyPark(vState)
+    SafetyPark(vState,8)
     raise SoundAlarmError,'Slew failed to reach desired location after multiple attempts'
 
 
@@ -7080,9 +7082,35 @@ def CheckIfCloudy():
     #call this function for consistency with the setting to use for checking if cloudy
     #Normally, when this function is called and returns True, then raise WeatherError exception
     tup = GetWeathershieldInfo()
-    if tup[0]:
-        if tup[3] > -10.0:      #Rule for cloudy (for now): if sky temp diff warmer than -10C
-            return True
+    # tup[0] = false if no data, true if data present
+    # Next 3 fields only present if tup[0] is true
+    # tup[1] = air temperature
+    # tup[2] = Sky IR temperature
+    # tup[3] = difference of (SkyTemperature) - (AirTemperature)
+    if not tup[0]:
+        return False    #cannot determine if cloudy
+        
+    #2020.07.14 JU: new logic, threshold difference depends on air temperature because
+    #   warmer summer temperatures will make the sky temperature difference lower
+    airTemp = tup[1]
+    skyDiff = tup[3]
+
+    # if airTemp > 25C, threshold = -4
+    # elif airTemp >15C, threshold = -6
+    # elif airTemp > 0C, threshold = -10
+    # else threshold = -12
+    if airTemp > 25:
+        threshold = -4
+    elif airTemp > 15:
+        threshold = -6
+    elif airtemp > 0:
+        threshold = -10
+    else:
+        threshold = -12
+
+    if skyDiff > threshold:
+        return True     #too warm, appears to be cloudy
+        
     return False
 
 #--------------------------------------------------------------------------------------------------------
@@ -7092,9 +7120,8 @@ def GetWeathershieldInfo():
     #   IR:-27.3C
     #   Diff:-20.2C
 
-    if not UseWeathershieldFlag():
-        Log2(4,"UseWeathershield is disabled")
-        return (False,)
+    #Assume that Set_UseWeathershield is true
+    
     try:
         link = "http://192.168.1.31/raw_temperature.html"
         f = urllib.urlopen(link)
@@ -7151,7 +7178,9 @@ def Process( Line, vState ):
         ("WAITUNTIL",    execWaitUntil,             0,     0),
         ("CATGOTO",      execCatGoto,               0,     0),      #Not implemented yet
         ("CoolerOff",    execCoolerOff,             0,     0),
+        ("COOLEROFF",    execCoolerOff,             0,     0),
         ("CoolerOn",     execCoolerOn,              0,     0),
+        ("COOLERON",     execCoolerOn,              0,     0),
         ("ARCHIVE",      execArchive,               0,     0),      #2011.07.30: runs __FinishSession.bat
         ("WAITFORDARK",        execWaitForDark,     0,     0),      #2012.09.16 added feature
         ("DUMPSTATE",          execDumpState,       0,     0),
@@ -7246,7 +7275,8 @@ def Process( Line, vState ):
         #("SET_FULLFRAME",     setFullFrame),
         ("SET_DRIFTTHRESHOLD",    setDriftThreshold),
 		("SET_ASTROMETRY.NET",	setAstrometryNet),		#New feature for Exec5.py
-        ("PP",                setPP)
+        ("PP",                setPP),
+        ("SET_USEWEATHERSHIELD", setUseWeathershield)
         ]
 
     #Reset any global state variables
@@ -7294,9 +7324,10 @@ def Process( Line, vState ):
                 #2019.12.16 JU: first check sun altitude, and weathershield
                 if TestSunAltitude(-6):
                     Log2(0,"Sun too high to execute another command")
-                    continue
-                if bWeatherCheck:           #only check weather for certain types of commands
-                    execWait4Clear1(vState)  #this holds current action until it is clear, or sunrise
+                    
+                    #2020.07.04 JU: There are 2 commands that are NOT skipped because of this: CoolerOff and ARCHIVE; all others don't execute
+                    if cmd != "CoolerOff" and cmd != "ARCHIVE":
+                        continue
 
                 tup = tuple(Line.split(','))
                 # 2010.05.19 JU: trim whitespace from all parameter fields
@@ -7335,7 +7366,7 @@ def Process( Line, vState ):
                     except WeatherError:
                         Log2(0,"WeatherError")
                         Error("Weather exception thrown; park mount for safety")
-                        SafetyPark( vState )
+                        SafetyPark( vState,9 )
                         if vState.WaitIfCloudy:
                             #if this is a 'stationary' command or other that should not be re-executed, just skip it
                             if not rerun:
@@ -7356,31 +7387,24 @@ def Process( Line, vState ):
 #TODO: add check of GetWeathershieldInfo() in all/important imaging steps, so it comes here as soon as cloudy, not after series of PP solve failures
 
                             #New logic using Weathershield data via web connection: 2019.12.10 JU
-                            if bWeatherCheck:   #only check weather for certain commands
-                                result = GetWeathershieldInfo()     #result = tuple( false, ) if no data, or (true,airTemp,skyTemp,skyDiff,sunAltitude)
-                                if result[0]:
-                                    #weathershield info available:
-                                    #  [1]=airTemp, [2]=skyTemp, [3]=skyDiff
-                                    bSkipCommand = False    #this used if sun is too high and we want to fully skip current step
-                                    while result[0]:
+                            if bWeatherCheck:   #only check weather for certain commands; this is separate from checking Weathershield; we don't want bad weather to prevent Archive or Darks commands running
+                                if vState.UseWeathershield:
+                                    cloudy = CheckIfCloudy()
+                                    
+                                    index = 0   #this is used to cycle through different types of dark/bias frames while waiting
+                                    while cloudy:
+                                        Log2(0,"ALERT: sky appears to be cloudy; waiting...")
                                         if TestSunAltitude(-6):
-                                            Error("Sun altitude too high for retry of this command, in except WeatherError")
+                                            Error("Sun altitude too high to continue waiting for sky to clear; called from except WeatherError")
                                             tret = (1,)
                                             bSkipCommand = True
                                             break
-                                        if result[3] > -10:     #warmer than -10C so still cloudy  [MAYBE ADJUST THIS THRESHOLD IN THE FUTURE?]
-                                            #execute 5 minute delay because still apparently cloudy
-                                            execUseful5MinuteDelay(vState)
-                                            pass
-
-                                        else:
-                                            #it might be clear at this point; let this step continue (we do NOT set bSkipCommand; we do NOT want to skip the current command, we want to retry it)
-                                            break
-
-                                        result = GetWeathershieldInfo()     #check latest Weathershield info to see if cleared up
-
-                                    if bSkipCommand:
-                                        break;      #this gets out of the retry loop for the current command, moving on to next command
+                                        #execute 5 minute delay because still apparently cloudy
+                                        execUseful5MinuteDelay(vState,index)
+                                        index += 1
+                                        cloudy = CheckIfCloudy()    #check again
+                                    Log2(0,"NOTE: sky appears to have cleared off; continuing execution now.")
+                                    
                                 else:
                                     #no Weathershield info, use normal delay and then attempt to resume imaging
                                     #Wait half an hour
@@ -7621,14 +7645,14 @@ def execCatFocusNear(t,vState):
     return implFocus(dic,vState)
 
 #--------------------------------
-def SafetyPark(vState):
+def SafetyPark(vState,src):
     #call this to park the scope right before raising SoundAlarmError,
     # so that the scope is in a reasonably safe position in case I don't
     # respond to the alarm right away.
 
     Log2Summary(0,"SAFETY PARK")
 
-    Log2(0,"SAFETY PARKING SCOPE..." )
+    Log2(0,"SAFETY PARKING SCOPE...%d" % src )
     print "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
     print "$$                             $$"
     print "$$ Parking scope so it is safe $$"
@@ -7823,16 +7847,35 @@ def execUseful30MinuteDelay(vState):
     dic["bin"] = 2
     return implDarks(dic,vState)
 
-def execUseful5MinuteDelay(vState):
-    #to do: future enhancement: alternate different kinds of Dark/Bias/Cropped frames here
+def execUseful5MinuteDelay(vState,kind):
+    #kind: alternate different kinds of Dark/Bias/Cropped frames here (all bin 2x2)
+    # (kind % 2) == 0:  full frame dark 300 sec, 10 full frame bias
+    # (kind % 2) == 1:  cropped frame dark 300 sec, 10 crop frame bias
+    
     dic = {}
-    dic["crop"]  = "yes"
     dic["isSeq"] = "no"
     dic["limit"] = "count"
-    dic["exp"] = 300
     dic["repeat"] = 1
     dic["bin"] = 2
-    return implDarks(dic,vState)
+    if (kind % 2) == 0:
+        dic["crop"]  = "no"
+        dic["exp"] = 300
+        implDarks(dic,vState)
+
+        dic["exp"] = 0
+        dic["type"]  = "Bias"
+        dic["repeat"] = 10
+        return implBias(dic,vState)
+        
+    else:   # (kind % 2) == 1:
+        dic["crop"] = "yes"
+        dic["exp"] = 300
+        implDarks(dic,vState)
+
+        dic["exp"] = 0
+        dic["type"]  = "Bias"
+        dic["repeat"] = 10
+        return implBias(dic,vState)
 
 #--------------------------------
 ##        ("BIAS",         execBias),     #
@@ -7881,50 +7924,6 @@ def execCropBias(t,vState):
 def execFlats(t,vState):
     dic = {}
     return implFlat(dic,vState)
-
-#--------------------------------
-WeathershieldThreshold = -8.    #sky temp difference must be this low or lower, otherwise too cloudy to image. (was -10.)
-def execWait4Clear1(vState):
-    result = GetWeathershieldInfo()
-    firstPark = True
-    while result[0]:
-        if TestSunAltitude(-6):
-            Log2(0,"Wait4Clear command stopped because sun is too high")
-            return (0,)
-        Log2(2,"Weathershield reports: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
-        if result[3] < WeathershieldThreshold:
-            #Log2(0,"Wait4Clear thinks it is clear")
-            Log2(2,"CLEAR: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3]))
-            return (0,)
-        if firstPark:
-            SafetyPark( vState )
-            firstPark = False
-        msg = "*Cloudy*: Weathershield: air=%.1f, sky=%.1f, Diff=%.1f" % (result[1],result[2],result[3])
-        Log2(2,msg)
-        Log2Summary(1,msg)
-        #Log2(2,"It appears to be cloudy currently. Wait for it to clear up.")
-        #Log2(3,"To disable this feature, edit C:/fits_script/UseWeathershield.txt")
-        execUseful5MinuteDelay(vState)
-        result = GetWeathershieldInfo()
-
-    Log2(0,"Wait4Clear unable to get data from Weathershield")
-    return (0,)
-
-#--------------------------------
-def UseWeathershieldFlag():
-    #This file controls whether the Exec8d.py script uses WeatherShield to decide if it is clear enough
-    #to image.  The first letter of this file must be Y or y or 1 in order to enable Weathershield logic.
-    #Any other letter there disables Weathershield logic and Exec8d.py reverts to old weather logic.
-    #This file can be edited while Exec8d.py is running, to dynamically change the setting.
-    try:
-        f = open("C:/fits_script/UseWeathershield.txt","r")
-        value = f.read()
-        f.close
-        if len(value) > 1 and (value[0] == 'Y' or value[0] == 'y' or value[0] == '1'):
-            return True
-    except:
-        Log2(0,"Unable to read file C:/fits_script/UseWeathershield.txt")
-    return False
 
 #--------------------------------
 def execWait4Clear(t,vState):
@@ -10675,9 +10674,22 @@ def setHaltAltitude	(t,vState):
     Log2(0,"SET Halt Altitude = " + str(vState.WesternHaltAltitude))
 
 #--------------------------------
+#2020.07.14 JU: add config feature to control use of Weathershield (previously this was done through a separate file; confusing)
+def setUseWeathershield(t,vState):
+    Log2(0,"Set_UseWeathershield, raw=<%s>" % str(t))
+    if len(t) > 0:
+        if t[0] in ('T','t','Y','y',1):
+            vState.UseWeathershield = True
+            Log2(1,"*** Weathershield WILL be used to check if cloudy conditions")
+        else:
+            vState.UseWeathershield = False
+            Log2(1,"*** Weathershield will NOT be used")
+    else:
+        Error("Invalid command for Set_UseWeathershield")
+    
+#--------------------------------
 #  Set_FocusCompensation=Y/N/D   (default = N at startup; D = delay start when sun gets low enough)
 def setFocusCompensation(t,vState):
-    pass
     Log2(0,"Set_FocusCompensation setting, raw=<%s>" % str(t))
     if len(t) > 0:
         if t[0] in ('T','t','Y','y',1):
@@ -11080,7 +11092,7 @@ def FindFocusStar(dRA):
     #return cFocusStar
     if dRA < 0 or dRA >= 24:
         Error("Invalid input to FindFocusStar")
-        SafetyPark(vState)
+        SafetyPark(vState,11)
         raise SoundAlarmError,'Halting program'
     for star in FocusStarList:
         if IgnoreFocusStars.count(star.name) > 0:
@@ -11094,7 +11106,7 @@ def FindFocusStar(dRA):
                 continue
             return star     #pick the first non-excluded star
     Error("Did not find any stars in FocusStarList")
-    SafetyPark(vState)
+    SafetyPark(vState,12)
     raise SoundAlarmError,'Halting program'
 
 #--------------------------------------------------------------------------------------------------------
@@ -11183,7 +11195,7 @@ def FindNearFocusStar(vState,tpos,minRA,maxRA):
         Error("*****************************************")
         Error("** Focus star list is empty !!!        **")
         Error("*****************************************")
-        SafetyPark(vState)
+        SafetyPark(vState,13)
         raise SoundAlarmError,'Halting program - focus star list is empty'
 
     minDistance = 99999
@@ -11239,7 +11251,7 @@ def FindNearFocusStar(vState,tpos,minRA,maxRA):
         Error("*****************************************")
         Error("** Did not find any 'near' focus stars **")
         Error("*****************************************")
-        SafetyPark(vState)
+        SafetyPark(vState,14)
         raise SoundAlarmError,'Halting program - did not find near focus star'
 
     return minStar
@@ -11543,7 +11555,7 @@ def callFocusMax(dic,vState):
         except SoundAlarmError: ##THIS NO LONGER HAPPENS, WE THROW WeatherError EXCEPTION INSTEAD
             imaging_db.RecordFocuser(vState,1370)
             Error("Caught exception in callFocusMax(), park scope then sound error")
-            SafetyPark(vState)
+            SafetyPark(vState,15)
             raise 	#re-raise this alarm; need to stop if this happens
         except:
             try:
@@ -14014,12 +14026,6 @@ def CheckPrepareRun():
 ObservingDateSet()
 LogHeader()
 print "Observing date =", ObservingDateString()
-
-if not UseWeathershieldFlag():
-    print("*** NOTE: Weathershield is currently DISABLED.")
-    print("*** To enable it, edit the file C:/fits_script/UseWeathershield.txt")
-    print("*** Press enter to continue...")
-    x = raw_input()
 
 try:
     okToRun = False
